@@ -28,8 +28,19 @@ Optional:
 
 - `pass-otp` — enables the **Copy OTP** / **Type OTP** rows. They appear only for
   entries whose decrypted body contains an `otpauth://` line.
-- `wtype` — enables every **Type** row. If it is not on `PATH` the Type rows are
-  hidden and only the Copy rows are shown.
+- `ydotool` — enables every **Type** row (and **Autotype login**). If it is not
+  on `PATH` the Type rows are hidden and only the Copy rows are shown. `ydotool`
+  injects keystrokes through `/dev/uinput`, so it works on any compositor, but
+  its `ydotoold` daemon must be running (e.g. `systemctl --user enable --now
+  ydotool`, depending on how your distribution packages it) with access to
+  `/dev/uinput`. A Type action that can't reach the daemon fails with a
+  "ydotoold is not running" notification.
+
+  `ydotool type` maps characters to key positions of a **US keyboard layout**:
+  on another active layout, symbols (and on some layouts letters) can come out
+  as different characters, and non-ASCII characters can't be typed at all.
+  Check with a throwaway field first if your passwords use symbols and you
+  don't type on a US layout.
 
 A working password store is expected where `pass` looks for it:
 `$PASSWORD_STORE_DIR` when set, otherwise `~/.password-store`. Override it with
@@ -59,7 +70,7 @@ its detail view, which lists, in order:
    `user`, or `username` field (case-insensitive), or the entry's own name when
    there is none
 4. **Autotype login** — type the whole login in one go (only when enabled and
-   `wtype` is present; see below)
+   `ydotool` is present; see below)
 5. **Copy `<field>`** / **Type `<field>`** for every remaining `key: value` line,
    in file order
 6. **Edit** — open `pass edit <entry>` in a terminal (only when a terminal
@@ -75,16 +86,16 @@ shows only the two OTP rows. The filter uses the same match rule as search
 `pass otp -c`, so the clipboard is cleared automatically after the timeout;
 usernames and other fields are copied directly and are *not* auto-cleared.
 **Type** closes the launcher, waits *Type delay*, then types the value with
-`wtype`.
+`ydotool`.
 
 **Autotype login** closes the launcher and types the whole login in sequence
-with `wtype`: the username, a separator key, the password, then — when the entry
+with `ydotool`: the username, a separator key, the password, then — when the entry
 has an `otpauth://` line — the current OTP. The separator is a **Tab** press by
 default (**Autotype field separator** setting), or an **Enter** press for logins
 that only show the password field after the username is submitted. An **Enter**
 is pressed at the end to submit — after the OTP when present, otherwise after
 the password — unless **Autotype presses Enter to submit** is turned off. The
-row only appears when **Autotype login row** is enabled *and* `wtype` is on
+row only appears when **Autotype login row** is enabled *and* `ydotool` is on
 `PATH`; it is off by default.
 
 **Edit** closes the launcher and runs `pass edit <entry>` in a terminal, letting
@@ -130,10 +141,10 @@ so the dialog can take focus and reopens once decryption finishes.
 | --- | --- | --- | --- |
 | `storePath` | `folder` | *(empty → `~/.password-store`)* | Exported as `PASSWORD_STORE_DIR` to every `pass` call. |
 | `clipTimeout` | `string` | *(empty)* | Seconds before `pass` clears the clipboard after **Copy Password** / **Copy OTP**. Empty falls back to the `PASSWORD_STORE_CLIP_TIME` environment variable, then to `pass`'s own default. Only a positive integer takes effect. |
-| `typeDelay` | `int` | `500` | Milliseconds to wait after the launcher closes before `wtype` starts typing, so the compositor can restore focus to the field you were in. *(Advanced. The v4 label "Launcher Close Delay" was misleading — this is the pre-typing delay.)* |
-| `wtypeDelay` | `int` | `12` | Milliseconds between simulated keystrokes. Increase it if characters are dropped. *(Advanced.)* |
+| `typeDelay` | `int` | `500` | Milliseconds to wait after the launcher closes before `ydotool` starts typing, so the compositor can restore focus to the field you were in. *(Advanced. The v4 label "Launcher Close Delay" was misleading — this is the pre-typing delay.)* |
+| `keyDelay` | `int` | `12` | Milliseconds between simulated keystrokes (`ydotool type -d`). Increase it if characters are dropped. Replaces the `wtypeDelay` setting of v2.6 and earlier — re-apply a custom value after upgrading. *(Advanced.)* |
 | `pinentryGraceMs` | `int` | `50` | Milliseconds to wait for a decrypt to finish before assuming a pinentry dialog is blocking and hiding the launcher. If your GPG agent already has the passphrase cached, the launcher never flickers. Lower values let the pinentry dialog take focus more easily but can make the launcher flicker more often; higher values (around 200–300ms) give a more stable launcher but risk the pinentry dialog spawning while the launcher is still open and waiting out the timeout, in which case it may not get focus depending on your window manager. *(Advanced.)* |
-| `autotypeEnabled` | `bool` | `true` | Show an **Autotype login** row in the detail view (sorted just after the username rows). Needs `wtype`, like the Type rows. |
+| `autotypeEnabled` | `bool` | `true` | Show an **Autotype login** row in the detail view (sorted just after the username rows). Needs `ydotool`, like the Type rows. |
 | `autotypeSeparator` | `select` | `tab` | Key autotype presses to move from the username field to the password field: `tab` or `enter`. |
 | `autotypeSubmit` | `bool` | `true` | Whether autotype presses Enter after its last value (after the OTP when present, otherwise after the password). Off stops the sequence just before submitting. *(Advanced.)* |
 | `detailActionOrder` | `select` | `copy` | In an entry's detail view, whether the **Copy** row (`copy`) or the **Type** row (`type`) comes first for each value. *(Advanced.)* |
@@ -158,11 +169,11 @@ launcher provider itself cannot receive IPC.)
 | Action | Effect |
 | --- | --- |
 | `copy-password` | `pass -c` — password to clipboard, auto-cleared |
-| `type-password` | type the password with `wtype` |
+| `type-password` | type the password with `ydotool` |
 | `copy-username` | username to clipboard (not auto-cleared) |
-| `type-username` | type the username with `wtype` |
+| `type-username` | type the username with `ydotool` |
 | `copy-otp` | `pass otp -c` — current OTP to clipboard, auto-cleared |
-| `type-otp` | type the current OTP with `wtype` |
+| `type-otp` | type the current OTP with `ydotool` |
 | `autotype` | the full **Autotype login** sequence (respects the autotype settings) |
 
 **Which entry?** With no `entry-path`, the action runs on the **current entry** —
@@ -179,8 +190,8 @@ whose name contains a space can only be reached through the no-path (current
 entry) form.
 
 Each action behaves exactly like activating the matching detail row: same
-clipboard timeout, `wtype` delays, and "Copied to clipboard" / failure
-notifications. `type-*` and `autotype` need `wtype`; `copy-otp` / `type-otp`
+clipboard timeout, typing delays, and "Copied to clipboard" / failure
+notifications. `type-*` and `autotype` need `ydotool`; `copy-otp` / `type-otp`
 need `pass-otp`. The entry is decrypted on demand (a pinentry dialog appears if
 GPG needs the passphrase), reusing the 60-second in-memory cache when warm. An
 unknown action, or no current entry yet, shows a "Quick action failed"
@@ -213,7 +224,7 @@ GPG pinentry prompt.
 - **Auto-paste:** Noctalia's `shell.launcher.auto_paste` (Ctrl+V / Shift+Insert
   after a copy) only applies to the built-in providers — the plugin runtime has
   no hook to opt in. The **Type** rows exist to cover that case; they insert the
-  value with `wtype` regardless of the `auto_paste` setting.
+  value with `ydotool` regardless of the `auto_paste` setting.
 - **Index file:** `find` lists the non-hidden folders and `*.gpg` names under the
   store once into `<plugin data dir>/store.index` (rebuilt in the background,
   ~once a minute). Every keystroke `grep`s that file — it holds paths only, never
@@ -221,9 +232,9 @@ GPG pinentry prompt.
   detail view (`pass show`), and are cached in memory for 60 s.
 - **Spawned processes:** `find` (index build); `grep` (per keystroke); `pass
   show`, `pass -c`, `pass otp`, `pass otp -c` (per action); `pass generate -i`
-  (Generate action); `test` then `pass generate` (New entry); `wtype` and
-  `sleep` (Type actions, and a chain of `wtype` calls plus `pass otp` for
-  Autotype); a terminal running `pass edit` (Edit / New entry actions);
+  (Generate action); `test` then `pass generate` (New entry); `ydotool` and
+  `sleep` (Type actions, and a chain of `ydotool type` / `ydotool key` calls
+  plus `pass otp` for Autotype); a terminal running `pass edit` (Edit / New entry actions);
   `noctalia msg panel-*` (pinentry focus handling).
 - **Secrets:** decrypted values live only in the plugin's in-memory cache and on
   the system clipboard via `pass` / Noctalia. Neither Noctalia state nor the
