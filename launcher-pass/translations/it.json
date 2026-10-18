@@ -48,11 +48,9 @@
     "generate-failed": "Rigenerazione della password non riuscita",
     "generated": "Password rigenerata",
     "no-current-entry": "Apri prima una voce",
-    "no-typing-backend": "Nessuno strumento di digitazione può digitare qui — avvia ydotoold, oppure usa un compositor che supporti il protocollo virtual-keyboard di wtype",
     "quick-action-failed": "Azione rapida non riuscita",
     "quick-action-unknown": "Azione rapida sconosciuta",
     "type-failed": "Digitazione non riuscita",
-    "wtype-unsupported": "Il compositor non supporta il protocollo virtual-keyboard di wtype",
     "ydotoold-not-running": "ydotoold non è in esecuzione — avvia il demone di ydotool"
   },
   "result": {
@@ -119,11 +117,11 @@
       "label": "Comando terminale"
     },
     "type-backend": {
-      "desc": "Strumento provato per primo dalle azioni Digita e Digitazione automatica; se non è installato o non può digitare qui, viene usato automaticamente l'altro. ydotool funziona con qualsiasi compositor ma richiede il demone ydotoold e presuppone un layout di tastiera US; wtype rispetta il layout della tastiera ma richiede un compositor Wayland che supporti il protocollo virtual-keyboard",
+      "desc": "Strumento provato per primo dalle azioni Digita e Digitazione automatica; se non è installato (o ydotoold non è in esecuzione) viene usato automaticamente l'altro. ydotool richiede il demone ydotoold e presuppone un layout di tastiera US; wtype rispetta il layout della tastiera",
       "label": "Strumento di digitazione preferito",
       "options": {
-        "wtype": "wtype (Wayland, qualsiasi layout)",
-        "ydotool": "ydotool (qualsiasi compositor, layout US)"
+        "wtype": "wtype (qualsiasi layout)",
+        "ydotool": "ydotool (layout US)"
       }
     },
     "type-delay": {

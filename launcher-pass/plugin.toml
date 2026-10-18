@@ -40,10 +40,9 @@ advanced = true
 
 # Preferred keystroke-injection tool for the Type rows, Autotype and the
 # type-* / autotype quick actions. "ydotool": /dev/uinput via the ydotoold
-# daemon — works on any compositor, but assumes a US keyboard layout. "wtype":
-# Wayland virtual-keyboard protocol — follows any layout, needs a compositor
-# that implements it. When the preferred one is not installed or can't type
-# here (ydotoold down / protocol unsupported) the other is used automatically.
+# daemon, assumes a US keyboard layout. "wtype": follows any layout. When the
+# preferred one is not installed (or, for ydotool, ydotoold is down) the other
+# is used automatically.
 # See TYPE_BACKENDS / runTypeSteps in launcher.luau.
 [[setting]]
 key = "typeBackend"

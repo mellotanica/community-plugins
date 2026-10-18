@@ -251,24 +251,21 @@ int) → nil (let `pass` default).
   be typed as Enter / Tab. Both put the value after `--`, so a leading `-` is
   still literal text; argv only, no shell escaping. ydotool needs `ydotoold`
   (uinput access) and maps characters to **US-layout** keycodes (symbols can
-  come out wrong on another layout, non-ASCII can't be typed); wtype needs the
-  Wayland virtual-keyboard protocol but uploads its own keymap, so it is
-  layout agnostic. Only binaries are probed; whether a backend can actually
+  come out wrong on another layout, non-ASCII can't be typed); wtype uploads
+  its own keymap, so it is layout agnostic, and needs no daemon. Only binaries are probed; whether a backend can actually
   type is discovered per action.
 - **`runTypeSteps(steps, subject)`** — the one runner for every Type path.
   Steps are backend-neutral (`{text = v}` / `{key = "tab" | "enter"}`) and
   turned into argv by `stepArgv(backend, step)` only once a backend is picked.
   Runs them in order on `typeBackends()[1]`, one process each. **Fallback:** if
   step **1** fails and `backendUnavailable` matches stderr — ydotool:
-  `ydotoold` ("Please check if ydotoold is running.", exit 2); wtype: `virtual
-  keyboard protocol` / `Wayland connection failed` (exit 1) — nothing has been
-  typed yet (both fail while connecting), so the whole list is replayed on the
-  next installed backend; logged, no notification. Any other failure, or a
-  failure past step 1, aborts with one `notification.type-failed`, body:
-  `notification.no-typing-backend` when every installed backend was
-  unavailable, the backend's `unavailableKey`
-  (`notification.ydotoold-not-running` / `notification.wtype-unsupported`) when
-  it was the only one installed, else the entry name. Nothing is cached about
+  `ydotoold` ("Please check if ydotoold is running.", exit 2; wtype has no
+  hints — it has no daemon to be missing) — nothing has been typed yet (it
+  fails while connecting), so the whole list is replayed on the next installed
+  backend; logged, no notification. Any other failure, or a failure past step
+  1, aborts with one `notification.type-failed`, body: the backend's
+  `unavailableKey` (`notification.ydotoold-not-running`) when it was
+  unavailable with no backend left to try, else the entry name. Nothing is cached about
   unavailability — the daemon may be started later, so each action re-tries
   the preferred backend first (its failure is a fast connect error).
 - **`typeValue(value)`** — `runAsync({"sleep", <typeDelay/1000>})` then
@@ -642,8 +639,7 @@ should survive into future changes:
   won't count as fully typing `b/a`.
 - **Two selectable typing backends, `ydotool` by default** (since v2.7.0).
   Issue #995 asked to drop `wtype` (unmaintained, mistypes some punctuation —
-  atx/wtype#71) for `ydotool` (`/dev/uinput` via `ydotoold`, display-server
-  agnostic). But `ydotool type` assumes a US layout, which breaks symbols for
+  atx/wtype#71) for `ydotool` (`/dev/uinput` via `ydotoold`). But `ydotool type` assumes a US layout, which breaks symbols for
   anyone on another layout, while `wtype` is layout agnostic — neither strictly
   wins, so `typeBackend` picks the *preferred* one. Backend differences live
   only in `TYPE_BACKENDS`; every Type / Autotype / quick-action path goes

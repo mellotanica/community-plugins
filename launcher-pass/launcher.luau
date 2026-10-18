@@ -162,10 +162,10 @@ end
 -- value as one positional arg after `--`, so a value starting with "-" is
 -- still literal text and no shell / quote-escaping is needed.
 --
--- ydotool (default): injects through /dev/uinput via its `ydotoold` daemon, so
---   it works on any compositor / display server (issue #995), but maps every
---   character onto a US-layout keycode — symbols can come out wrong on another
---   active layout, non-ASCII can't be typed.
+-- ydotool (default, issue #995): injects through /dev/uinput via its
+--   `ydotoold` daemon, but maps every character onto a US-layout keycode —
+--   symbols can come out wrong on another active layout, non-ASCII can't be
+--   typed.
 --   text: `ydotool type -e 0 -d <keyDelay> -- <value>`. `-e 0` turns off
 --     ydotool's backslash-escape interpretation (on by default for argv
 --     strings — a `\n` / `\t` in a password would otherwise become Enter / Tab).
@@ -173,17 +173,15 @@ end
 --     (linux/input-event-codes.h: Tab 15, Enter 28), not keysyms.
 --   unavailable: ydotool exits non-zero with a "failed to connect socket …
 --     Please check if ydotoold is running." stderr when the daemon is down.
--- wtype: Wayland virtual-keyboard protocol; uploads a keymap holding the exact
---   keysyms it types, so it is keyboard-layout agnostic, but needs a
---   compositor implementing zwp_virtual_keyboard_v1 and is unmaintained
---   (mistypes some punctuation sequences, atx/wtype#71).
+-- wtype: uploads a keymap holding the exact keysyms it types, so it is
+--   keyboard-layout agnostic, but is unmaintained (mistypes some punctuation
+--   sequences, atx/wtype#71). Needs no daemon, so it has no "unavailable"
+--   state of its own.
 --   text: `wtype -d <keyDelay> -- <value>`; keys: `wtype -k <keysym>`.
---   unavailable: "Compositor does not support the virtual keyboard protocol",
---     or "Wayland connection failed" (no Wayland session), exit 1.
 --
 -- `unavailableHints`: stderr substrings meaning "this backend can't type here
--- at all" — both are reported while connecting, before a single key is sent,
--- which is what makes retrying the same steps on the fallback safe.
+-- at all" — reported while connecting, before a single key is sent, which is
+-- what makes retrying the same steps on the fallback safe.
 -- `unavailableKey`: the notification body for that case.
 local TYPE_BACKENDS = {
   ydotool = {
@@ -207,15 +205,14 @@ local TYPE_BACKENDS = {
       tab = { "wtype", "-k", "Tab" },
       enter = { "wtype", "-k", "Return" },
     },
-    unavailableHints = { "virtual keyboard protocol", "Wayland connection failed" },
-    unavailableKey = "notification.wtype-unsupported",
+    unavailableHints = {},
   },
 }
 local TYPE_BACKEND_ORDER = { "ydotool", "wtype" } -- fallback order after the preferred one
 
 -- Probe each backend's binary once (the answer can't change over a session).
--- Only the binary is probed: whether `ydotoold` is running / the compositor
--- speaks the virtual-keyboard protocol is discovered per action (runTypeSteps).
+-- Only the binary is probed: whether `ydotoold` is running is discovered per
+-- action (runTypeSteps).
 local typerProbe = {} -- name → bool
 local function backendInstalled(name)
   if typerProbe[name] == nil then
@@ -1311,13 +1308,11 @@ end
 
 -- Runs `steps` in order, one backend process each, on the first backend of
 -- typeBackends(). If that backend's *first* step fails as "unavailable"
--- (backendUnavailable — ydotoold down, compositor without the virtual-keyboard
--- protocol), nothing has been typed yet, so the whole list is replayed on the
--- next installed backend (logged, no notification). Any other failure, or one
--- past step 1, aborts the rest with one notification.type-failed — its body
--- notification.no-typing-backend when every installed backend turned out
--- unavailable, the backend's own unavailableKey when it was the only one
--- installed, else the entry name.
+-- (backendUnavailable — ydotoold down), nothing has been typed yet, so the
+-- whole list is replayed on the next installed backend (logged, no
+-- notification). Any other failure, or one past step 1, aborts the rest with
+-- one notification.type-failed — its body the backend's unavailableKey when it
+-- was unavailable with nothing to fall back to, else the entry name.
 local function runTypeSteps(steps, subject)
   local backends = typeBackends()
   if #backends == 0 then
@@ -1346,7 +1341,7 @@ local function runTypeSteps(steps, subject)
         end
         local body = subject
         if unavailable and i == 1 then
-          body = bi > 1 and tr("notification.no-typing-backend") or tr(backend.unavailableKey)
+          body = tr(backend.unavailableKey)
         end
         noctalia.notifyError(tr("notification.type-failed"), body)
       end)
