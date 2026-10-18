@@ -1,7 +1,7 @@
 {
   "action": {
     "autotype": "Autotype login",
-    "autotype-desc": "Type username, password, and OTP in sequence",
+    "autotype-desc": "Type username, password, and OTP in sequence with {backend}",
     "copy-field": "Copy {key}",
     "copy-otp": "Copy OTP",
     "copy-password": "Copy Password",

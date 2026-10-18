@@ -1,7 +1,7 @@
 {
   "action": {
     "autotype": "Digitazione automatica",
-    "autotype-desc": "Digita nome utente, password e OTP in sequenza",
+    "autotype-desc": "Digita nome utente, password e OTP in sequenza con {backend}",
     "copy-field": "Copia {key}",
     "copy-otp": "Copia OTP",
     "copy-password": "Copia password",

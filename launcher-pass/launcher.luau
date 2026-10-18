@@ -764,7 +764,10 @@ end
 -- login in sequence (see autotypeEntry). Present only when the autotypeEnabled
 -- setting is on *and* the typing backend is installed — it is a Type-family action, so it
 -- follows the same availability rule as the Type rows. Not an "act:" row:
--- onActivate dispatches "autotype:<path>" straight to autotypeEntry.
+-- onActivate dispatches "autotype:<path>" straight to autotypeEntry. The
+-- subtitle names the backend that will be tried first (typeBackends()[1],
+-- after preference resolution) — a runtime fallback (ydotoold down) is only
+-- discovered when the action runs.
 local function autotypeRowFor(entryPath)
   if not typerAvailable() then
     return nil
@@ -775,7 +778,7 @@ local function autotypeRowFor(entryPath)
   return {
     id = "autotype:" .. entryPath,
     title = tr("action.autotype"),
-    subtitle = tr("action.autotype-desc"),
+    subtitle = tr("action.autotype-desc", { backend = typeBackends()[1] }),
     glyph = "keyboard",
   }
 end
