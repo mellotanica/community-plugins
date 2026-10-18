@@ -28,7 +28,7 @@
     "type-field": "Type {key}",
     "type-otp": "Type OTP",
     "type-password": "Type Password",
-    "type-password-desc": "Type password using wtype",
+    "type-password-desc": "Type password using ydotool",
     "type-username": "Type Username"
   },
   "command": {
@@ -50,7 +50,8 @@
     "no-current-entry": "Open a password entry first",
     "quick-action-failed": "Quick action failed",
     "quick-action-unknown": "Unknown quick action",
-    "type-failed": "Type failed"
+    "type-failed": "Type failed",
+    "ydotoold-not-running": "ydotoold is not running — start the ydotool daemon"
   },
   "result": {
     "folder": "Folder",
@@ -60,7 +61,7 @@
   },
   "settings": {
     "autotype-enabled": {
-      "desc": "Show an Autotype row in an entry's detail view that types the username, a separator key, the password, then the OTP when the entry has one. Needs wtype",
+      "desc": "Show an Autotype row in an entry's detail view that types the username, a separator key, the password, then the OTP when the entry has one. Needs ydotool",
       "label": "Autotype login row"
     },
     "autotype-separator": {
@@ -99,6 +100,10 @@
       "desc": "Editor for the Edit action, exported as EDITOR to pass edit (e.g. nvim, code --wait). Blank leaves EDITOR unset so pass uses its own default",
       "label": "Editor command"
     },
+    "key-delay": {
+      "desc": "Delay between keystrokes in milliseconds for ydotool (default: 12)",
+      "label": "Keystroke delay"
+    },
     "pinentry-grace-ms": {
       "desc": "Milliseconds to wait for a password to decrypt before assuming a GPG pinentry prompt needs focus and hiding the launcher (default: 200)",
       "label": "Pinentry grace period"
@@ -114,10 +119,6 @@
     "type-delay": {
       "desc": "Delay in milliseconds before typing starts (default: 500)",
       "label": "Type delay"
-    },
-    "wtype-delay": {
-      "desc": "Delay between keystrokes in milliseconds for wtype (default: 12)",
-      "label": "wtype keystroke delay"
     }
   }
 }

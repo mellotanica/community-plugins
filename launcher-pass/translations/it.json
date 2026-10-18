@@ -28,7 +28,7 @@
     "type-field": "Digita {key}",
     "type-otp": "Digita OTP",
     "type-password": "Digita password",
-    "type-password-desc": "Digita password con wtype",
+    "type-password-desc": "Digita password con ydotool",
     "type-username": "Digita nome utente"
   },
   "command": {
@@ -50,7 +50,8 @@
     "no-current-entry": "Apri prima una voce",
     "quick-action-failed": "Azione rapida non riuscita",
     "quick-action-unknown": "Azione rapida sconosciuta",
-    "type-failed": "Digitazione non riuscita"
+    "type-failed": "Digitazione non riuscita",
+    "ydotoold-not-running": "ydotoold non è in esecuzione — avvia il demone di ydotool"
   },
   "result": {
     "folder": "Cartella",
@@ -60,7 +61,7 @@
   },
   "settings": {
     "autotype-enabled": {
-      "desc": "Mostra una riga «Digitazione automatica» nella vista dettagli di una voce che digita il nome utente, un tasto separatore, la password e poi l'OTP se la voce ne ha uno. Richiede wtype",
+      "desc": "Mostra una riga «Digitazione automatica» nella vista dettagli di una voce che digita il nome utente, un tasto separatore, la password e poi l'OTP se la voce ne ha uno. Richiede ydotool",
       "label": "Riga di digitazione automatica"
     },
     "autotype-separator": {
@@ -99,6 +100,10 @@
       "desc": "Editor per l'azione Modifica, esportato come EDITOR verso pass edit (es. nvim, code --wait). Vuoto lascia EDITOR non impostato e pass usa il proprio predefinito",
       "label": "Comando editor"
     },
+    "key-delay": {
+      "desc": "Ritardo tra le battiture in millisecondi per ydotool (predefinito: 12)",
+      "label": "Ritardo battitura"
+    },
     "pinentry-grace-ms": {
       "desc": "Millisecondi di attesa per la decifratura di una password prima di presumere che una richiesta pinentry di GPG necessiti del focus e nascondere il launcher (predefinito: 200)",
       "label": "Periodo di tolleranza pinentry"
@@ -114,10 +119,6 @@
     "type-delay": {
       "desc": "Ritardo in millisecondi prima dell'inizio della digitazione (predefinito: 500)",
       "label": "Ritardo digitazione"
-    },
-    "wtype-delay": {
-      "desc": "Ritardo tra le battiture in millisecondi per wtype (predefinito: 12)",
-      "label": "Ritardo battitura wtype"
     }
   }
 }
