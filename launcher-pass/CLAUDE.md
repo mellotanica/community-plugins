@@ -34,11 +34,11 @@ something newer.
 
 As of now (`noctalia 5.0.0-beta9.3`, `plugin_api` 28), there are still some open points that will need to be covered when possible:
 
-### wtype cmdline leak
+### ydotool cmdline leak
 
-Right now `noctalia.runAsync(cmdOrArgv)` does not let the plugin pass data to the supbrocess standard input, nor export environment variables, so the only way to pass the password/login/OTP/field values to `wtype` to perform autofill is by adding the values to the commandline, exposing them to external processes inspecting the `wtype` process commandline.
+Right now `noctalia.runAsync(cmdOrArgv)` does not let the plugin pass data to the subprocess standard input, nor export environment variables, so the only way to pass the password/login/OTP/field values to `ydotool type` to perform autofill is by adding the values to the commandline, exposing them to external processes inspecting the `ydotool` process commandline.
 
-As soon as a more secure option is available, the `wtype` execution needs to be updated to a more secure variant.
+As soon as `runAsync` can feed stdin, switch the text steps to `ydotool type -e 0 -f -` (ydotool reads the text from stdin with `-f -`; escapes are already off for file/stdin input, `-e 0` just keeps it explicit). A temp file for `-f <path>` is not an improvement — it puts the secret on disk.
 
 ### List item preselection
 
@@ -181,10 +181,10 @@ path; browse rows the basename.
   first) and `detailActionGrouping` (pair per value, or all-Copy-then-all-Type).
   `actionRow(entryPath, spec, verb, n)` returns one row and records its context
   in `detailActions["act:"..n]` (an explicit counter). Type rows are omitted
-  entirely when `wtype` is absent (`wtypeAvailable`, memoised). An **Autotype**
+  entirely when `ydotool` is absent (`ydotoolAvailable`, memoised). An **Autotype**
   row (`id = "autotype:"..entryPath`, `autotypeRowFor`) is spliced in right
   after the username's first rendered row — between the login values and the
-  remaining-field rows — when the `autotypeEnabled` setting is on *and* `wtype`
+  remaining-field rows — when the `autotypeEnabled` setting is on *and* `ydotool`
   is present (in grouped mode it lands inside the first verb block, still
   between username and fields). Not an `act:` row: `onActivate` dispatches
   `autotype:` straight to `autotypeEntry`. An **Edit** row
@@ -221,7 +221,7 @@ int) → nil (let `pass` default).
 | Copy Password | `copyViaPass({"pass","-c",entryPath})` |
 | Copy OTP | `copyViaPass({"pass","otp","-c",entryPath})` |
 | Copy Username / field | `copyPlain(ctx.value)` |
-| Type Password / Username / field | `typeViaWtype(ctx.value)` |
+| Type Password / Username / field | `typeViaYdotool(ctx.value)` |
 | Type OTP | `typeOtp(entryPath)` — `pass otp` (no `-c`) → `typeValue(code)` |
 
 - **`copyViaPass`** closes the launcher first (so a pinentry prompt from an
@@ -231,16 +231,28 @@ int) → nil (let `pass` default).
 - **`copyPlain`** — `noctalia.copyToClipboard(value or "", "text/plain")` (the
   MIME arg is mandatory), `notification.copied`, close launcher. No auto-clear.
 - **`typeValue(value)`** — `runAsync({"sleep", <typeDelay/1000>})` then
-  `runAsync({"wtype", "-d", <wtypeDelay>, "--", value})`. Argv only: the value
-  after `--` is literal text even if it starts with `-`, so no `printf | wtype -`
-  pipe and no shell escaping. `typeViaWtype` closes the launcher first (wtype
-  types into the focused window); the `typeDelay` sleep lets the compositor
-  restore focus. Failures → `notification.typeFailed`.
-- `typeDelay` / `wtypeDelay` are **milliseconds** (`intSetting`, 0 allowed).
+  `runAsync(ydotoolTypeArgv(value))` = `{"ydotool", "type", "-e", "0", "-d",
+  <keyDelay>, "--", value}`. **`-e 0` is mandatory**: `ydotool type` interprets
+  backslash escapes in argv strings by default, so a `\n` / `\t` inside a
+  password would be typed as Enter / Tab. Argv only: the value after `--` is
+  literal text even if it starts with `-`, so no shell escaping.
+  `typeViaYdotool` closes the launcher first (the injected keys go to the
+  focused window); the `typeDelay` sleep lets the compositor restore focus.
+  Failures → `typeFailed(result, subject)`: `notification.type-failed`, with
+  `notification.ydotoold-not-running` as the body when stderr mentions
+  `ydotoold` (daemon down — ydotool exits 2 with "Please check if ydotoold is
+  running."), else the entry name.
+- `ydotool` needs its `ydotoold` daemon (uinput access). `ydotoolAvailable`
+  only probes the client binary on `PATH`; daemon state is reported per action.
+  `ydotool type` maps characters to **US-layout** keycodes — symbols can come
+  out wrong on another active layout, and non-ASCII can't be typed.
+- `typeDelay` / `keyDelay` are **milliseconds** (`intSetting`, 0 allowed).
+  `keyDelay` is ydotool's `-d` (delay between key down/up pairs); it replaced
+  the `wtypeDelay` setting key in v2.7.0.
 
 ### Autotype action
 
-`autotypeEntry(entryPath)` types a whole login in sequence with `wtype`. It is
+`autotypeEntry(entryPath)` types a whole login in sequence with `ydotool`. It is
 reached both from the Autotype detail row (launcher open, `detailCache` warm)
 and from the `autotype` quick-action IPC event (launcher closed, cache cold),
 so it closes the panel up front and resolves the entry through `withEntryData`
@@ -248,24 +260,25 @@ so it closes the panel up front and resolves the entry through `withEntryData`
 no typing. Sequence:
 
 1. `username`
-2. the **separator key** — `autotypeSeparator`: `Tab` (default) or `Return`
+2. the **separator key** — `autotypeSeparator`: `Tab` (default) or `Enter`
 3. `password`
-4. `Return` — emitted when an OTP follows in step 5, **or** when `autotypeSubmit`
+4. `Enter` — emitted when an OTP follows in step 5, **or** when `autotypeSubmit`
    is on
 5. when `hasOtp`: `pass otp <entryPath>` (no `-c`) → type the code
-   5.2. `Return` — emitted only when `autotypeSubmit` is on
+   5.2. `Enter` — emitted only when `autotypeSubmit` is on
 
-So `autotypeSubmit` (default on) toggles just the **final** `Return`: after the
+So `autotypeSubmit` (default on) toggles just the **final** `Enter`: after the
 OTP when present, otherwise after the password.
 
-Each step is its own `wtype` process, chained through `runWtypeSteps` (a first
-failed step aborts the rest with one `notification.type-failed`): a text step is
-`{"wtype","-d",<wtypeDelay>,"--",value}` (same `-- value` literal-text form as
-`typeValue`), a key step is `{"wtype","-k",<keysym>}`. They are **not** merged
-into one `wtype` call: `wtype` allows a single terminal `--` (everything after it
-is text), so literal text and `-k` keys can't be interleaved safely for
-arbitrary values. `autotypeEntry` closes the launcher first (like the Type
-paths), then — after the OTP fetch, if any — a single `typeDelay` sleep lets the
+Each step is its own `ydotool` process, chained through `runTypeSteps` (a first
+failed step aborts the rest via one `typeFailed`): a text step is
+`ydotoolTypeArgv(value)` (same `-e 0 … -- value` literal-text form as
+`typeValue`), a key step is `ydotoolKeyArgv(code)` = `{"ydotool","key",
+"<code>:1","<code>:0"}` with raw input-event keycodes (`KEYCODE_TAB` 15,
+`KEYCODE_ENTER` 28 — not keysyms). They are **not** merged into one call: text
+and keys are separate ydotool subcommands, and with escapes off (`-e 0`, needed
+for arbitrary values) there is no in-band `\t` / `\n` for Tab / Enter.
+`autotypeEntry` closes the launcher first (like the Type paths), then — after the OTP fetch, if any — a single `typeDelay` sleep lets the
 compositor restore focus before the chain runs.
 
 ### Quick-action IPC
@@ -341,7 +354,7 @@ when non-empty — blank leaves `EDITOR` unset. The term prefix is
 `terminalArgv()`: the `terminalCommand` setting split on whitespace (a full argv
 prefix that takes a command, exec flag included — `foot -e`, `gnome-terminal
 --`); else `{$TERMINAL, "-e"}`; else `{<first of TERMINAL_CANDIDATES on PATH>,
-"-e"}` (`detectedTerminal`, memoised like `wtypeAvailable`); else nil. On the
+"-e"}` (`detectedTerminal`, memoised like `ydotoolAvailable`); else nil. On the
 `runAsync` callback `detailCache[entryPath]` is cleared so the next detail view
 re-decrypts the edited file. The `runAsync` call passes **`EDIT_TIMEOUT_MS`**
 (24 h) — `noctalia.runAsync` applies a short default bound when the 3rd arg is
@@ -418,7 +431,7 @@ Its own `+` prefix (never produced by browsing), `+!` for the confirm step
 in the Noctalia source fires `shell.launcher.auto_paste` only when
 `provider.supportsAutoPaste()`, which `PluginLauncherProvider` never overrides;
 there is no manifest key / `noctalia.*` call / `noctalia msg` command to flip it.
-`wtype` is the only insertion path this plugin has.
+`ydotool` is the only insertion path this plugin has.
 
 ### The pinentry dance
 
@@ -443,7 +456,7 @@ text`, which the host re-delivers as a fresh `onQuery` that finds the now-warm
 `detailCache` and re-renders. `<leader>` is
 `noctalia.getSetting("shell.launcher.provider_prefix")` (fallback `">"`) —
 **never hardcode it**, or the reopened context isn't recognised as a command.
-`copyViaPass` / `typeViaWtype` sidestep all this by closing the launcher up front
+`copyViaPass` / `typeViaYdotool` sidestep all this by closing the launcher up front
 and never reopening.
 
 The reopen is **conditional on the decrypt succeeding**. If `pass show` exits
@@ -471,9 +484,9 @@ Do not regress these without a deliberate reason:
    search *and* the detail row filter.
 3. **Detail rows** — Copy Password, Copy OTP (**only if** the body has
    `otpauth://`), Copy Username, then Copy for each remaining `key: value` field
-   in file order; a Type counterpart for each when `wtype` is present; an
+   in file order; a Type counterpart for each when `ydotool` is present; an
    "Autotype" row between the Username row(s) and the first field row when
-   `autotypeEnabled` is on and `wtype` is present; an "Edit" row after all of
+   `autotypeEnabled` is on and `ydotool` is present; an "Edit" row after all of
    those when a terminal resolves (`terminalArgv()`); a "Generate" row after
    Edit (always); a "Go back" row. Order/grouping of Copy vs Type per
    `detailActionOrder` / `detailActionGrouping`; value order is fixed. Autotype
@@ -497,11 +510,12 @@ Do not regress these without a deliberate reason:
 6. **Clipboard timeout** — `clipTimeout` setting (positive int) wins, else
    `PASSWORD_STORE_CLIP_TIME` env, else `pass`'s default. Applies to Copy
    Password / Copy OTP (`pass -c` / `pass otp -c`).
-7. **Typing** — `sleep(typeDelay/1000)` then `wtype -d <wtypeDelay>`. Both are ms.
+7. **Typing** — `sleep(typeDelay/1000)` then `ydotool type -e 0 -d <keyDelay> --
+   <value>`. Both are ms. Escapes stay off (`-e 0`) so values are typed verbatim.
 8. **Store path** — `storePath` setting or `~/.password-store` (expanded),
    exported as `PASSWORD_STORE_DIR` on every `pass` call.
 9. **OTP copy vs type** — `pass otp -c` for copy (with clip env), `pass otp` +
-   `wtype` for type.
+   `ydotool type` for type.
 10. **Notifications** — a "Copied to clipboard" notice after a successful copy.
 11. **i18n** — no hard-coded user-facing strings; every string through
     `noctalia.tr`, every key in every locale file.
@@ -545,7 +559,7 @@ should survive into future changes:
   rejects any uppercase or dotted-into-one segment in `translations/*.json`
   keys and in `label_key` / `description_key` values.
 - **Twelve settings.** `storePath` (folder), `clipTimeout` (string — kept a
-  string so `""` means "fall back to env"), `typeDelay` / `wtypeDelay` /
+  string so `""` means "fall back to env"), `typeDelay` / `keyDelay` /
   `pinentryGraceMs` (int, `advanced`), `detailActionOrder` /
   `detailActionGrouping` (select, `advanced`), `terminalCommand` (string,
   `advanced` — `""` means auto-detect the terminal for the Edit action),
@@ -592,16 +606,23 @@ should survive into future changes:
   segment) — then that one folder leads, since the user clearly meant to drill
   in. It's an ordered exact check, not "all segments hit somewhere", so `a b`
   won't count as fully typing `b/a`.
-- **`typeValue` passes the secret as a positional arg after `wtype … --`**, not
-  over a `printf %s '<val>' | wtype -` pipe. Argv-only means no shell, no
-  single-quote escaping, and a value with a leading `-` is still literal text.
-- **Autotype is a chain of one-shot `wtype` processes, not a single call.**
-  `wtype`'s grammar is `[OPTION_OR_TEXT]… -- [TEXT]…` with one terminal `--`, so
-  once you switch to literal-text mode for an arbitrary value you can't emit a
-  `-k` key after it. Each username/password/OTP segment therefore gets its own
-  `wtype … -- <value>` and each separator/Enter its own `wtype -k <keysym>`,
-  run in sequence (`runWtypeSteps`); the alternative — bare text args before
-  `--` — would misparse a value starting with `-` as an option.
+- **Typing goes through `ydotool`, not `wtype`** (since v2.7.0, issue #995).
+  `wtype` is unmaintained and mistypes some punctuation sequences
+  (atx/wtype#71); `ydotool` injects via `/dev/uinput` through `ydotoold`, so it
+  is display-server agnostic. Costs accepted: a daemon must be running, and
+  `ydotool type` assumes a US key layout.
+- **`typeValue` passes the secret as a positional arg after `ydotool type -e 0
+  … --`**, not over a `printf %s '<val>' | … -f -` pipe. Argv-only means no
+  shell, no single-quote escaping, and a value with a leading `-` is still
+  literal text. `-e 0` disables ydotool's argv backslash-escape processing so
+  `\` sequences in a secret are typed verbatim.
+- **Autotype is a chain of one-shot `ydotool` processes, not a single call.**
+  Text (`ydotool type`) and keys (`ydotool key`) are different subcommands, and
+  the escape-based `\t` / `\n` shortcut inside one `type` call is unusable
+  once `-e 0` is set for arbitrary values. Each username/password/OTP segment
+  therefore gets its own `ydotool type -e 0 … -- <value>` and each
+  separator/Enter its own `ydotool key <code>:1 <code>:0`, run in sequence
+  (`runTypeSteps`).
 - **Copy/Type close the launcher up front and never reopen.** QML did the same
   (`launcher.close()` before `pass -c`); with the panel gone a pinentry prompt
   gets focus on its own, so these paths skip the close/reopen dance that
@@ -644,7 +665,7 @@ should survive into future changes:
   are shaped. `en.json` is canonical; every key must exist in all 11 locales
   (verified by regenerating all of them from one source whenever keys change).
 - **Native auto-paste** — verified unreachable from a plugin (see the pinentry /
-  actions sections). `wtype` is the fallback; a native path would need an
+  actions sections). `ydotool` is the fallback; a native path would need an
   upstream `auto_paste` flag on the `[[launcher_provider]]` manifest block.
 
 ---
@@ -677,7 +698,7 @@ order is already the sorted order).
 | `copyToClipboard(text, mime)` | `mime` is **mandatory** (`"text/plain"`) |
 | `notify(title, body)` / `notifyError(title, body)` | toasts |
 | `fuzzyScore(pattern, text)` | fzy scorer; `nil` on no match, `1024` on exact, else a `double`. Subsequence/order-dependent. |
-| `commandExists(name)` | probe optional deps (`wtype`) |
+| `commandExists(name)` | probe optional deps (`ydotool`) |
 | `pluginDataDir()` | persistent per-plugin dir (the index file) |
 | `nowMs()` | monotonic ms |
 | `state.set(key, value)` / `state.get(key)` | cross-entry key-value the host brokers between a plugin's VMs — the only way the `[[service]]` VM sees the launcher VM's `currentEntry`. (`state.watch` exists too; unused here — `onIpc` reads `get` at call time.) |
