@@ -164,18 +164,69 @@ local function intSetting(key, default)
   return math.floor(n)
 end
 
--- Type actions shell out to `ydotool`; probe for it once (the answer can't
+-- Typing backends, picked by the `typeBackend` setting. Both take the value
+-- as one positional arg after `--`, so a value starting with "-" is still
+-- literal text and no shell / quote-escaping is needed.
+--
+-- ydotool (default): injects through /dev/uinput via its `ydotoold` daemon, so
+--   it works on any compositor / display server (issue #995), but maps every
+--   character onto a US-layout keycode — symbols can come out wrong on another
+--   active layout, non-ASCII can't be typed.
+--   text: `ydotool type -e 0 -d <keyDelay> -- <value>`. `-e 0` turns off
+--     ydotool's backslash-escape interpretation (on by default for argv
+--     strings — a `\n` / `\t` in a password would otherwise become Enter / Tab).
+--   keys: `ydotool key <code>:1 <code>:0` — raw Linux input-event keycodes
+--     (linux/input-event-codes.h: Tab 15, Enter 28), not keysyms.
+--   daemonHint: ydotool exits non-zero with a "failed to connect socket …
+--     Please check if ydotoold is running." stderr when the daemon is down —
+--     by far its likeliest failure, so typeFailed gives it its own message.
+-- wtype: Wayland virtual-keyboard protocol; uploads a keymap holding the exact
+--   keysyms it types, so it is keyboard-layout agnostic, but needs a
+--   compositor implementing zwp_virtual_keyboard_v1 and is unmaintained
+--   (mistypes some punctuation sequences, atx/wtype#71).
+--   text: `wtype -d <keyDelay> -- <value>`; keys: `wtype -k <keysym>`.
+local TYPE_BACKENDS = {
+  ydotool = {
+    bin = "ydotool",
+    textArgv = function(value, delay)
+      return { "ydotool", "type", "-e", "0", "-d", delay, "--", value }
+    end,
+    keyArgv = {
+      tab = { "ydotool", "key", "15:1", "15:0" },
+      enter = { "ydotool", "key", "28:1", "28:0" },
+    },
+    daemonHint = "ydotoold",
+  },
+  wtype = {
+    bin = "wtype",
+    textArgv = function(value, delay)
+      return { "wtype", "-d", delay, "--", value }
+    end,
+    keyArgv = {
+      tab = { "wtype", "-k", "Tab" },
+      enter = { "wtype", "-k", "Return" },
+    },
+  },
+}
+
+-- The configured backend, read per call so a settings change applies at once;
+-- an unknown stored value falls back to ydotool (the manifest default).
+local function typeBackend()
+  return TYPE_BACKENDS[noctalia.getConfig("typeBackend")] or TYPE_BACKENDS.ydotool
+end
+
+-- Probe the selected backend's binary once per backend (the answer can't
 -- change over a session) and drop the Type rows entirely when it's missing,
--- rather than letting every Type action fail. Only the client binary is
--- probed: whether the `ydotoold` daemon is running can change at any time, so
--- that is reported per action instead (typeFailed).
-local ydotoolChecked, ydotoolOk = false, false
-local function ydotoolAvailable()
-  if not ydotoolChecked then
-    ydotoolChecked = true
-    ydotoolOk = noctalia.commandExists("ydotool") and true or false
+-- rather than letting every Type action fail. Only the binary is probed:
+-- whether `ydotoold` is running can change at any time, so that is reported
+-- per action instead (typeFailed).
+local typerProbe = {} -- bin → bool
+local function typerAvailable()
+  local bin = typeBackend().bin
+  if typerProbe[bin] == nil then
+    typerProbe[bin] = noctalia.commandExists(bin) and true or false
   end
-  return ydotoolOk
+  return typerProbe[bin]
 end
 
 -- The "Edit" action runs `pass edit` in a terminal (see editEntry). Noctalia's
@@ -184,7 +235,7 @@ end
 -- prefix that takes a command, incl. the exec flag — "foot -e", "kitty -e",
 -- "gnome-terminal --"); then $TERMINAL + "-e"; then the first of a common list
 -- that exists on PATH + "-e". nil when nothing resolves — the Edit row is
--- dropped then, the same way the Type rows drop without `ydotool`.
+-- dropped then, the same way the Type rows drop without a typing backend.
 local TERMINAL_CANDIDATES = { "ghostty", "kitty", "alacritty", "wezterm", "foot", "konsole", "xterm" }
 local termProbe -- memoised PATH scan: nil = not scanned, false = none found, string = the winner
 
@@ -632,11 +683,11 @@ end
 
 -- The Autotype row (CLAUDE.md "Autotype action"): one row that types the whole
 -- login in sequence (see autotypeEntry). Present only when the autotypeEnabled
--- setting is on *and* `ydotool` is installed — it is a Type-family action, so it
+-- setting is on *and* the typing backend is installed — it is a Type-family action, so it
 -- follows the same availability rule as the Type rows. Not an "act:" row:
 -- onActivate dispatches "autotype:<path>" straight to autotypeEntry.
 local function autotypeRowFor(entryPath)
-  if not ydotoolAvailable() then
+  if not typerAvailable() then
     return nil
   end
   if noctalia.getConfig("autotypeEnabled") ~= true then
@@ -695,13 +746,13 @@ local function renderDetailRows(entryPath, data, filter)
     }
   end
 
-  -- verbs to emit, in the configured order; "type" drops out when ydotool is
+  -- verbs to emit, in the configured order; "type" drops out when the typing backend is
   -- missing (leaving a single verb, so the order setting stops mattering).
   local ordered = noctalia.getConfig("detailActionOrder") == "type"
       and { "type", "copy" } or { "copy", "type" }
   local verbs = {}
   for _, v in ipairs(ordered) do
-    if v == "copy" or ydotoolAvailable() then
+    if v == "copy" or typerAvailable() then
       verbs[#verbs + 1] = v
     end
   end
@@ -1147,39 +1198,32 @@ local function copyPlain(value, subject)
   closeLauncherPanel(function() end)
 end
 
--- ── type actions (ydotool) ───────────────────────────────────────────────
+-- ── type actions (ydotool / wtype) ───────────────────────────────────────
 -- Noctalia has no plugin-facing keystroke/paste API — a launcher provider
 -- can't opt into the host's native auto-paste (PluginLauncherProvider never
--- reports supportsAutoPaste()), so typing is done here with `ydotool`, which
--- injects keystrokes through /dev/uinput via its `ydotoold` daemon and so
--- works on any compositor / display server (replaced `wtype`, issue #995).
+-- reports supportsAutoPaste()), so typing is done here with the backend chosen
+-- by the `typeBackend` setting (TYPE_BACKENDS, near the top of the file).
 --
 -- The injected keys land in whatever window currently holds focus, so every
 -- Type action closes the launcher panel first (as QML did with
 -- launcher.close()), then waits `typeDelay` ms for the compositor to hand
 -- focus back to the window the user was on before typing the value.
 --
--- ydotoolTypeArgv: `ydotool type -e 0 -d <keyDelay> -- <value>`. `-e 0` turns
--- off ydotool's backslash-escape interpretation (on by default for argv
--- strings — a `\n` / `\t` in a password would otherwise become Enter / Tab);
--- the value goes after `--` as a single positional arg, so a value starting
--- with "-" is still literal text and no shell / quote-escaping is needed.
-local function ydotoolTypeArgv(value)
-  return { "ydotool", "type", "-e", "0", "-d", tostring(intSetting("keyDelay", 12)), "--", value or "" }
+-- argv typing `value` literally with the configured backend.
+local function typeTextArgv(value)
+  return typeBackend().textArgv(value or "", tostring(intSetting("keyDelay", 12)))
 end
 
--- ydotoolKeyArgv: press + release one key. `ydotool key` takes raw Linux
--- input-event keycodes (linux/input-event-codes.h), not keysyms.
-local KEYCODE_TAB, KEYCODE_ENTER = 15, 28
-local function ydotoolKeyArgv(keycode)
-  return { "ydotool", "key", keycode .. ":1", keycode .. ":0" }
+-- argv pressing + releasing one key: "tab" or "enter".
+local function typeKeyArgv(key)
+  return typeBackend().keyArgv[key]
 end
 
--- Reports a failed ydotool run. ydotool exits non-zero with a "failed to
--- connect socket … Please check if ydotoold is running." stderr when the
--- daemon is down — by far the likeliest failure, so it gets its own hint.
+-- Reports a failed typing run; a backend's daemonHint in stderr (ydotool with
+-- its daemon down) gets the dedicated "ydotoold is not running" body.
 local function typeFailed(result, subject)
-  if string.find(result.stderr or "", "ydotoold", 1, true) then
+  local hint = typeBackend().daemonHint
+  if hint and string.find(result.stderr or "", hint, 1, true) then
     noctalia.notifyError(tr("notification.type-failed"), tr("notification.ydotoold-not-running"))
   else
     noctalia.notifyError(tr("notification.type-failed"), subject)
@@ -1188,7 +1232,7 @@ end
 
 local function typeValue(value, subject)
   noctalia.runAsync({ "sleep", tostring(intSetting("typeDelay", 500) / 1000) }, function()
-    noctalia.runAsync(ydotoolTypeArgv(value), function(result)
+    noctalia.runAsync(typeTextArgv(value), function(result)
       if result.exitCode ~= 0 or result.timedOut then
         typeFailed(result, subject)
       end
@@ -1198,7 +1242,7 @@ end
 
 -- Plain value already in memory (password / username / field): close the
 -- launcher, then type it.
-local function typeViaYdotool(value, subject)
+local function typeViaBackend(value, subject)
   closeLauncherPanel(function()
     typeValue(value, subject)
   end)
@@ -1219,7 +1263,7 @@ local function typeOtp(entryPath, subject)
 end
 
 -- ── autotype action ──────────────────────────────────────────────────────
--- The Autotype row types a whole login in sequence via `ydotool` (CLAUDE.md
+-- The Autotype row types a whole login in sequence via the typing backend (CLAUDE.md
 -- "Autotype action"):
 --   1. username
 --   2. the separator key — autotypeSeparator: Tab (default) or Enter
@@ -1230,12 +1274,12 @@ end
 -- i.e. autotypeSubmit toggles the *final* Enter — after the OTP when present,
 -- otherwise after the password.
 --
--- Each step is its own `ydotool` process: a text step is ydotoolTypeArgv
--- (`ydotool type -e 0 … -- <value>`, same literal-text form as typeValue), a
--- key step is ydotoolKeyArgv (`ydotool key <code>:1 <code>:0`). Text and keys
--- are separate ydotool subcommands, so they can't share one invocation; with
--- escapes off there is no in-band way to emit Tab / Enter either — hence the
--- chain. A failed step aborts the rest with one notification.type-failed.
+-- Each step is its own backend process: a text step is typeTextArgv (same
+-- literal-text `-- <value>` form as typeValue), a key step is typeKeyArgv.
+-- Neither backend can mix arbitrary text and keys in one invocation — ydotool
+-- splits them into `type` / `key` subcommands (and with escapes off has no
+-- in-band Tab / Enter), wtype allows a single terminal `--` after which
+-- everything is text, so a `-k` can't follow the value — hence the chain. A failed step aborts the rest with one notification.type-failed.
 local function runTypeSteps(steps, i, subject)
   local argv = steps[i]
   if argv == nil then
@@ -1258,9 +1302,9 @@ end
 -- warm cache. A cold-decrypt failure → notification.type-failed, no typing.
 local function autotypeEntry(entryPath)
   local subject = entryPath:match("[^/]+$") or entryPath
-  local sepKey = noctalia.getConfig("autotypeSeparator") == "enter" and KEYCODE_ENTER or KEYCODE_TAB
+  local sepKey = noctalia.getConfig("autotypeSeparator") == "enter" and "enter" or "tab"
   local submit = noctalia.getConfig("autotypeSubmit") ~= false
-  local typeStep, keyStep = ydotoolTypeArgv, ydotoolKeyArgv
+  local typeStep, keyStep = typeTextArgv, typeKeyArgv
 
   local function runSequence(data, otpCode)
     local steps = {
@@ -1269,11 +1313,11 @@ local function autotypeEntry(entryPath)
       typeStep(data.password),
     }
     if otpCode and otpCode ~= "" then
-      steps[#steps + 1] = keyStep(KEYCODE_ENTER) -- step 4: submit the username/password form
+      steps[#steps + 1] = keyStep("enter") -- step 4: submit the username/password form
       steps[#steps + 1] = typeStep(otpCode)
     end
     if submit then
-      steps[#steps + 1] = keyStep(KEYCODE_ENTER) -- step 4 (no OTP) or step 5.2 (with OTP)
+      steps[#steps + 1] = keyStep("enter") -- step 4 (no OTP) or step 5.2 (with OTP)
     end
     -- One focus-restore delay after the launcher closes (as typeValue does),
     -- then walk the chain.
@@ -1443,8 +1487,9 @@ end
 --   copy: password / OTP go through `pass -c` / `pass otp -c` (copyViaPass:
 --     clip-timeout env + close-launcher-first pinentry handling); username and
 --     fields are copied verbatim from memory via copyPlain.
---   type: `ydotool`, after a launcher close + typeDelay; OTP is fetched with
---     `pass otp` first. (Type rows only exist when `ydotool` is installed.)
+--   type: the typeBackend (ydotool / wtype), after a launcher close +
+--     typeDelay; OTP is fetched with `pass otp` first. (Type rows only exist
+--     when the selected backend is installed.)
 local function runAction(ctx)
   local subject = ctx.entryPath:match("[^/]+$") or ctx.entryPath
   local fieldSubject = ctx.kind == "field" and (ctx.key or subject) or subject
@@ -1454,7 +1499,7 @@ local function runAction(ctx)
     if ctx.kind == "otp" then
       typeOtp(ctx.entryPath, subject)
     else
-      typeViaYdotool(ctx.value, fieldSubject)
+      typeViaBackend(ctx.value, fieldSubject)
     end
     return
   end

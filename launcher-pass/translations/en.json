@@ -28,7 +28,7 @@
     "type-field": "Type {key}",
     "type-otp": "Type OTP",
     "type-password": "Type Password",
-    "type-password-desc": "Type password using ydotool",
+    "type-password-desc": "Type password using the typing backend",
     "type-username": "Type Username"
   },
   "command": {
@@ -61,7 +61,7 @@
   },
   "settings": {
     "autotype-enabled": {
-      "desc": "Show an Autotype row in an entry's detail view that types the username, a separator key, the password, then the OTP when the entry has one. Needs ydotool",
+      "desc": "Show an Autotype row in an entry's detail view that types the username, a separator key, the password, then the OTP when the entry has one. Needs the selected typing backend",
       "label": "Autotype login row"
     },
     "autotype-separator": {
@@ -101,7 +101,7 @@
       "label": "Editor command"
     },
     "key-delay": {
-      "desc": "Delay between keystrokes in milliseconds for ydotool (default: 12)",
+      "desc": "Delay between keystrokes in milliseconds for the typing backend (default: 12)",
       "label": "Keystroke delay"
     },
     "pinentry-grace-ms": {
@@ -115,6 +115,14 @@
     "terminal-command": {
       "desc": "Terminal used to run pass edit, with its exec flag (e.g. foot -e, kitty -e, gnome-terminal --). Blank = auto-detect from $TERMINAL or a common terminal on PATH",
       "label": "Terminal command"
+    },
+    "type-backend": {
+      "desc": "Tool used by the Type and Autotype actions. ydotool works on any compositor but needs the ydotoold daemon and assumes a US keyboard layout; wtype follows your keyboard layout but needs a Wayland compositor supporting the virtual-keyboard protocol",
+      "label": "Typing backend",
+      "options": {
+        "wtype": "wtype (Wayland, any layout)",
+        "ydotool": "ydotool (any compositor, US layout)"
+      }
     },
     "type-delay": {
       "desc": "Delay in milliseconds before typing starts (default: 500)",

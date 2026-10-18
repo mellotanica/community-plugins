@@ -28,7 +28,7 @@
     "type-field": "Digita {key}",
     "type-otp": "Digita OTP",
     "type-password": "Digita password",
-    "type-password-desc": "Digita password con ydotool",
+    "type-password-desc": "Digita password con lo strumento di digitazione",
     "type-username": "Digita nome utente"
   },
   "command": {
@@ -61,7 +61,7 @@
   },
   "settings": {
     "autotype-enabled": {
-      "desc": "Mostra una riga «Digitazione automatica» nella vista dettagli di una voce che digita il nome utente, un tasto separatore, la password e poi l'OTP se la voce ne ha uno. Richiede ydotool",
+      "desc": "Mostra una riga «Digitazione automatica» nella vista dettagli di una voce che digita il nome utente, un tasto separatore, la password e poi l'OTP se la voce ne ha uno. Richiede lo strumento di digitazione selezionato",
       "label": "Riga di digitazione automatica"
     },
     "autotype-separator": {
@@ -101,7 +101,7 @@
       "label": "Comando editor"
     },
     "key-delay": {
-      "desc": "Ritardo tra le battiture in millisecondi per ydotool (predefinito: 12)",
+      "desc": "Ritardo tra le battiture in millisecondi per lo strumento di digitazione (predefinito: 12)",
       "label": "Ritardo battitura"
     },
     "pinentry-grace-ms": {
@@ -115,6 +115,14 @@
     "terminal-command": {
       "desc": "Terminale usato per eseguire pass edit, con il suo flag di esecuzione (es. foot -e, kitty -e, gnome-terminal --). Vuoto = rilevamento automatico da $TERMINAL o da un terminale comune nel PATH",
       "label": "Comando terminale"
+    },
+    "type-backend": {
+      "desc": "Strumento usato dalle azioni Digita e Digitazione automatica. ydotool funziona con qualsiasi compositor ma richiede il demone ydotoold e presuppone un layout di tastiera US; wtype rispetta il layout della tastiera ma richiede un compositor Wayland che supporti il protocollo virtual-keyboard",
+      "label": "Strumento di digitazione",
+      "options": {
+        "wtype": "wtype (Wayland, qualsiasi layout)",
+        "ydotool": "ydotool (qualsiasi compositor, layout US)"
+      }
     },
     "type-delay": {
       "desc": "Ritardo in millisecondi prima dell'inizio della digitazione (predefinito: 500)",
