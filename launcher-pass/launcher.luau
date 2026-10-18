@@ -171,15 +171,16 @@ end
 --     strings — a `\n` / `\t` in a password would otherwise become Enter / Tab).
 --   keys: `ydotool key <code>:1 <code>:0` — raw Linux input-event keycodes
 --     (linux/input-event-codes.h: Tab 15, Enter 28), not keysyms.
---   unavailable: ydotool exits non-zero with a "failed to connect socket …
---     Please check if ydotoold is running." stderr when the daemon is down.
+--   unavailable: ydotool exits 2 with "failed to connect socket …
+--     Please check if ydotoold is running." on *stdout* (not stderr) when the
+--     daemon is down.
 -- wtype: uploads a keymap holding the exact keysyms it types, so it is
 --   keyboard-layout agnostic, but is unmaintained (mistypes some punctuation
 --   sequences, atx/wtype#71). Needs no daemon, so it has no "unavailable"
 --   state of its own.
 --   text: `wtype -d <keyDelay> -- <value>`; keys: `wtype -k <keysym>`.
 --
--- `unavailableHints`: stderr substrings meaning "this backend can't type here
+-- `unavailableHints`: stdout/stderr substrings meaning "this backend can't type here
 -- at all" — reported while connecting, before a single key is sent, which is
 -- what makes retrying the same steps on the fallback safe.
 -- `unavailableKey`: the notification body for that case.
@@ -1304,9 +1305,12 @@ local function stepArgv(backend, step)
   return backend.keyArgv[step.key]
 end
 
+-- Hints are matched against stdout *and* stderr: ydotool 1.0.4 prints its
+-- "failed to connect socket … Please check if ydotoold is running." to stdout.
 local function backendUnavailable(backend, result)
+  local output = (result.stdout or "") .. "\n" .. (result.stderr or "")
   for _, hint in ipairs(backend.unavailableHints) do
-    if string.find(result.stderr or "", hint, 1, true) then
+    if string.find(output, hint, 1, true) then
       return true
     end
   end
@@ -1342,7 +1346,7 @@ local function runTypeSteps(steps, subject)
         local unavailable = backendUnavailable(backend, result)
         if unavailable and i == 1 and backends[bi + 1] ~= nil then
           noctalia.log("launcher-pass: " .. name .. " unavailable ("
-            .. trim((result.stderr or ""):gsub("%s+", " ")) .. "), falling back to " .. backends[bi + 1])
+            .. trim(((result.stdout or "") .. " " .. (result.stderr or "")):gsub("%s+", " ")) .. "), falling back to " .. backends[bi + 1])
           attempt(bi + 1)
           return
         end

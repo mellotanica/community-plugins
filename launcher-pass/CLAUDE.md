@@ -234,7 +234,7 @@ int) → nil (let `pass` default).
   MIME arg is mandatory), `notification.copied`, close launcher. No auto-clear.
 - **Typing backends** — `TYPE_BACKENDS`, one entry per tool: `bin` (probed once
   by `backendInstalled`), `textArgv(value, delay)`, `keyArgv.tab` /
-  `keyArgv.enter`, `unavailableHints` (stderr substrings meaning "can't type
+  `keyArgv.enter`, `unavailableHints` (stdout/stderr substrings meaning "can't type
   here at all"), `unavailableKey` (notification body for that). The
   `typeBackend` select setting names the **preferred** backend (`ydotool`
   default / `wtype`; unknown value → ydotool); `typeBackends()` returns the
@@ -258,8 +258,9 @@ int) → nil (let `pass` default).
   Steps are backend-neutral (`{text = v}` / `{key = "tab" | "enter"}`) and
   turned into argv by `stepArgv(backend, step)` only once a backend is picked.
   Runs them in order on `typeBackends()[1]`, one process each. **Fallback:** if
-  step **1** fails and `backendUnavailable` matches stderr — ydotool:
-  `ydotoold` ("Please check if ydotoold is running.", exit 2; wtype has no
+  step **1** fails and `backendUnavailable` matches stdout or stderr — ydotool:
+  `ydotoold` ("Please check if ydotoold is running.", exit 2, printed on
+  **stdout**; wtype has no
   hints — it has no daemon to be missing) — nothing has been typed yet (it
   fails while connecting), so the whole list is replayed on the next installed
   backend; logged, no notification. Any other failure, or a failure past step
