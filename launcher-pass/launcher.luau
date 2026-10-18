@@ -744,6 +744,9 @@ end
 -- Build one action row for `spec` + `verb` ("copy" | "type"), record its
 -- dispatch context in `detailActions` under an "act:<n>" id, and return the
 -- row. `onActivate` reads the context back and hands it to `runAction`.
+-- Type rows get the backend that will be tried first (typeBackends()[1],
+-- after preference resolution) appended to their subtitle, like the Autotype
+-- row.
 local function actionRow(entryPath, spec, verb, n)
   local id = "act:" .. n
   local isCopy = verb == "copy"
@@ -755,7 +758,8 @@ local function actionRow(entryPath, spec, verb, n)
   return {
     id = id,
     title = title,
-    subtitle = isCopy and spec.copySubtitle or spec.typeSubtitle,
+    subtitle = isCopy and spec.copySubtitle
+        or tr("action.type-subtitle", { subtitle = spec.typeSubtitle or "", backend = typeBackends()[1] or "" }),
     glyph = isCopy and "copy" or "typography",
   }
 end

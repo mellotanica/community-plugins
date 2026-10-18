@@ -28,7 +28,8 @@
     "type-field": "Type {key}",
     "type-otp": "Type OTP",
     "type-password": "Type Password",
-    "type-password-desc": "Type password using the typing backend",
+    "type-password-desc": "Type password",
+    "type-subtitle": "{subtitle} · {backend}",
     "type-username": "Type Username"
   },
   "command": {

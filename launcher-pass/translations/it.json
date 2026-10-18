@@ -28,7 +28,8 @@
     "type-field": "Digita {key}",
     "type-otp": "Digita OTP",
     "type-password": "Digita password",
-    "type-password-desc": "Digita password con lo strumento di digitazione",
+    "type-password-desc": "Digita password",
+    "type-subtitle": "{subtitle} · {backend}",
     "type-username": "Digita nome utente"
   },
   "command": {
