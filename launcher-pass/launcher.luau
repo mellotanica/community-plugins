@@ -211,15 +211,23 @@ local TYPE_BACKENDS = {
 }
 local TYPE_BACKEND_ORDER = { "ydotool", "wtype" } -- fallback order after the preferred one
 
--- Probe each backend's binary once (the answer can't change over a session).
+-- PATH probes (typing backends, terminal) are cached for PROBE_TTL_MS only:
+-- a tool installed / removed while the plugin runs shows up (or drops out) on
+-- the next view, while the many calls made while rendering one view share a
+-- single scan. commandExists is a handful of access() calls — cheap.
+local PROBE_TTL_MS = 2000
+
 -- Only the binary is probed: whether `ydotoold` is running is discovered per
 -- action (runTypeSteps).
-local typerProbe = {} -- name → bool
+local typerProbe = {} -- name → { ok = bool, at = nowMs }
 local function backendInstalled(name)
-  if typerProbe[name] == nil then
-    typerProbe[name] = noctalia.commandExists(TYPE_BACKENDS[name].bin) and true or false
+  local p = typerProbe[name]
+  local now = noctalia.nowMs()
+  if p == nil or now - p.at > PROBE_TTL_MS then
+    p = { ok = noctalia.commandExists(TYPE_BACKENDS[name].bin) and true or false, at = now }
+    typerProbe[name] = p
   end
-  return typerProbe[name]
+  return p.ok
 end
 
 -- Installed backends in try order: the preferred one (`typeBackend` setting,
@@ -256,11 +264,14 @@ end
 -- that exists on PATH + "-e". nil when nothing resolves — the Edit row is
 -- dropped then, the same way the Type rows drop without a typing backend.
 local TERMINAL_CANDIDATES = { "ghostty", "kitty", "alacritty", "wezterm", "foot", "konsole", "xterm" }
-local termProbe -- memoised PATH scan: nil = not scanned, false = none found, string = the winner
+local termProbe -- cached PATH scan: nil = not scanned, false = none found, string = the winner
+local termProbeAt = 0
 
 local function detectedTerminal()
-  if termProbe == nil then
+  local now = noctalia.nowMs()
+  if termProbe == nil or now - termProbeAt > PROBE_TTL_MS then
     termProbe = false
+    termProbeAt = now
     for _, t in ipairs(TERMINAL_CANDIDATES) do
       if noctalia.commandExists(t) then
         termProbe = t

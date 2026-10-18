@@ -183,7 +183,7 @@ path; browse rows the basename.
   first) and `detailActionGrouping` (pair per value, or all-Copy-then-all-Type).
   `actionRow(entryPath, spec, verb, n)` returns one row and records its context
   in `detailActions["act:"..n]` (an explicit counter). Type rows are omitted
-  entirely when *no* typing backend is installed (`typerAvailable`; binaries memoised per backend). An **Autotype**
+  entirely when *no* typing backend is installed (`typerAvailable`; binaries re-probed after `PROBE_TTL_MS`, 2 s). An **Autotype**
   row (`id = "autotype:"..entryPath`, `autotypeRowFor`) is spliced in right
   after the username's first rendered row — between the login values and the
   remaining-field rows — when the `autotypeEnabled` setting is on *and* the typing backend
@@ -232,8 +232,9 @@ int) → nil (let `pass` default).
   `pass -c` / `pass otp -c` do the clipboard auto-clear themselves.
 - **`copyPlain`** — `noctalia.copyToClipboard(value or "", "text/plain")` (the
   MIME arg is mandatory), `notification.copied`, close launcher. No auto-clear.
-- **Typing backends** — `TYPE_BACKENDS`, one entry per tool: `bin` (probed once
-  by `backendInstalled`), `textArgv(value, delay)`, `keyArgv.tab` /
+- **Typing backends** — `TYPE_BACKENDS`, one entry per tool: `bin` (probed by
+  `backendInstalled`, result cached `PROBE_TTL_MS` = 2 s so installs /
+  removals show up without a plugin reload), `textArgv(value, delay)`, `keyArgv.tab` /
   `keyArgv.enter`, `unavailableHints` (stdout/stderr substrings meaning "can't type
   here at all"), `unavailableKey` (notification body for that). The
   `typeBackend` select setting names the **preferred** backend (`ydotool`
@@ -381,7 +382,7 @@ when non-empty — blank leaves `EDITOR` unset. The term prefix is
 `terminalArgv()`: the `terminalCommand` setting split on whitespace (a full argv
 prefix that takes a command, exec flag included — `foot -e`, `gnome-terminal
 --`); else `{$TERMINAL, "-e"}`; else `{<first of TERMINAL_CANDIDATES on PATH>,
-"-e"}` (`detectedTerminal`, memoised like `typerAvailable`); else nil. On the
+"-e"}` (`detectedTerminal`, cached for `PROBE_TTL_MS` like `typerAvailable`); else nil. On the
 callback `detailCache[entryPath]` is cleared so the next detail view
 re-decrypts the edited file. The run goes through **`runUnbounded`** —
 `noctalia.runAsync` caps every run at 60 s and then SIGTERMs the whole process
