@@ -29,8 +29,12 @@ Optional:
 - `pass-otp` — enables the **Copy OTP** / **Type OTP** rows. They appear only for
   entries whose decrypted body contains an `otpauth://` line.
 - a **typing backend** — enables every **Type** row (and **Autotype login**).
-  Pick one with the **Typing backend** setting; if the selected tool is not on
-  `PATH` the Type rows are hidden and only the Copy rows are shown.
+  The **Preferred typing backend** setting picks which one is tried first; the
+  other is used **automatically** when the preferred one is not installed or
+  can't type in your session (`ydotoold` not running, or a compositor without
+  the virtual-keyboard protocol for `wtype`) — so installing both gives the
+  most robust setup. If neither tool is on `PATH` the Type rows are hidden and
+  only the Copy rows are shown.
 
   | Backend | Works on | Keyboard layout | Notes |
   | --- | --- | --- | --- |
@@ -39,9 +43,9 @@ Optional:
 
   `ydotool` injects keystrokes through `/dev/uinput`, so its `ydotoold` daemon
   must be running (e.g. `systemctl --user enable --now ydotool`, depending on
-  how your distribution packages it) with access to `/dev/uinput`. A Type
-  action that can't reach the daemon fails with a "ydotoold is not running"
-  notification. `ydotool type` maps characters to key positions of a **US
+  how your distribution packages it) with access to `/dev/uinput`; when it
+  isn't, Type actions fall back to `wtype` if installed, otherwise they fail
+  with a "ydotoold is not running" notification. `ydotool type` maps characters to key positions of a **US
   keyboard layout**: on another active layout, symbols (and on some layouts
   letters) can come out as different characters, and non-ASCII characters
   can't be typed at all — switch to `wtype` if that bites you.
@@ -145,7 +149,7 @@ so the dialog can take focus and reopens once decryption finishes.
 | --- | --- | --- | --- |
 | `storePath` | `folder` | *(empty → `~/.password-store`)* | Exported as `PASSWORD_STORE_DIR` to every `pass` call. |
 | `clipTimeout` | `string` | *(empty)* | Seconds before `pass` clears the clipboard after **Copy Password** / **Copy OTP**. Empty falls back to the `PASSWORD_STORE_CLIP_TIME` environment variable, then to `pass`'s own default. Only a positive integer takes effect. |
-| `typeBackend` | `select` | `ydotool` | Tool that performs the **Type** / **Autotype** actions: `ydotool` (any compositor, assumes a US keyboard layout, needs `ydotoold`) or `wtype` (Wayland virtual-keyboard protocol, follows any layout). |
+| `typeBackend` | `select` | `ydotool` | **Preferred typing backend** for the **Type** / **Autotype** actions: `ydotool` (any compositor, assumes a US keyboard layout, needs `ydotoold`) or `wtype` (Wayland virtual-keyboard protocol, follows any layout). When the preferred one is missing or can't type here, the other is used automatically. |
 | `typeDelay` | `int` | `500` | Milliseconds to wait after the launcher closes before the typing backend starts typing, so the compositor can restore focus to the field you were in. *(Advanced. The v4 label "Launcher Close Delay" was misleading — this is the pre-typing delay.)* |
 | `keyDelay` | `int` | `12` | Milliseconds between simulated keystrokes (`-d` of `ydotool type` / `wtype`). Increase it if characters are dropped. Replaces the `wtypeDelay` setting of v2.6 and earlier — re-apply a custom value after upgrading. *(Advanced.)* |
 | `pinentryGraceMs` | `int` | `50` | Milliseconds to wait for a decrypt to finish before assuming a pinentry dialog is blocking and hiding the launcher. If your GPG agent already has the passphrase cached, the launcher never flickers. Lower values let the pinentry dialog take focus more easily but can make the launcher flicker more often; higher values (around 200–300ms) give a more stable launcher but risk the pinentry dialog spawning while the launcher is still open and waiting out the timeout, in which case it may not get focus depending on your window manager. *(Advanced.)* |

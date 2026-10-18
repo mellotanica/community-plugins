@@ -183,7 +183,7 @@ path; browse rows the basename.
   first) and `detailActionGrouping` (pair per value, or all-Copy-then-all-Type).
   `actionRow(entryPath, spec, verb, n)` returns one row and records its context
   in `detailActions["act:"..n]` (an explicit counter). Type rows are omitted
-  entirely when the selected typing backend is absent (`typerAvailable`, memoised per backend binary). An **Autotype**
+  entirely when *no* typing backend is installed (`typerAvailable`; binaries memoised per backend). An **Autotype**
   row (`id = "autotype:"..entryPath`, `autotypeRowFor`) is spliced in right
   after the username's first rendered row — between the login values and the
   remaining-field rows — when the `autotypeEnabled` setting is on *and* the typing backend
@@ -232,10 +232,14 @@ int) → nil (let `pass` default).
   `pass -c` / `pass otp -c` do the clipboard auto-clear themselves.
 - **`copyPlain`** — `noctalia.copyToClipboard(value or "", "text/plain")` (the
   MIME arg is mandatory), `notification.copied`, close launcher. No auto-clear.
-- **Typing backends** — `TYPE_BACKENDS[typeBackend()]`, picked by the
-  `typeBackend` select setting (`ydotool` default / `wtype`; unknown value →
-  ydotool). Each entry: `bin` (probed by `typerAvailable`), `textArgv(value,
-  delay)`, `keyArgv.tab` / `keyArgv.enter`, optional `daemonHint`.
+- **Typing backends** — `TYPE_BACKENDS`, one entry per tool: `bin` (probed once
+  by `backendInstalled`), `textArgv(value, delay)`, `keyArgv.tab` /
+  `keyArgv.enter`, `unavailableHints` (stderr substrings meaning "can't type
+  here at all"), `unavailableKey` (notification body for that). The
+  `typeBackend` select setting names the **preferred** backend (`ydotool`
+  default / `wtype`; unknown value → ydotool); `typeBackends()` returns the
+  *installed* ones in try order — preferred first, then the rest of
+  `TYPE_BACKEND_ORDER`. `typerAvailable()` = at least one installed.
 
   | backend | text step | Tab / Enter |
   |---|---|---|
@@ -249,15 +253,28 @@ int) → nil (let `pass` default).
   (uinput access) and maps characters to **US-layout** keycodes (symbols can
   come out wrong on another layout, non-ASCII can't be typed); wtype needs the
   Wayland virtual-keyboard protocol but uploads its own keymap, so it is
-  layout agnostic. `typerAvailable` probes only the binary; daemon state is
-  reported per action.
+  layout agnostic. Only binaries are probed; whether a backend can actually
+  type is discovered per action.
+- **`runTypeSteps(steps, subject)`** — the one runner for every Type path.
+  Steps are backend-neutral (`{text = v}` / `{key = "tab" | "enter"}`) and
+  turned into argv by `stepArgv(backend, step)` only once a backend is picked.
+  Runs them in order on `typeBackends()[1]`, one process each. **Fallback:** if
+  step **1** fails and `backendUnavailable` matches stderr — ydotool:
+  `ydotoold` ("Please check if ydotoold is running.", exit 2); wtype: `virtual
+  keyboard protocol` / `Wayland connection failed` (exit 1) — nothing has been
+  typed yet (both fail while connecting), so the whole list is replayed on the
+  next installed backend; logged, no notification. Any other failure, or a
+  failure past step 1, aborts with one `notification.type-failed`, body:
+  `notification.no-typing-backend` when every installed backend was
+  unavailable, the backend's `unavailableKey`
+  (`notification.ydotoold-not-running` / `notification.wtype-unsupported`) when
+  it was the only one installed, else the entry name. Nothing is cached about
+  unavailability — the daemon may be started later, so each action re-tries
+  the preferred backend first (its failure is a fast connect error).
 - **`typeValue(value)`** — `runAsync({"sleep", <typeDelay/1000>})` then
-  `runAsync(typeTextArgv(value))`. `typeViaBackend` closes the launcher first
+  `runTypeSteps({{text = value}})`. `typeViaBackend` closes the launcher first
   (the injected keys go to the focused window); the `typeDelay` sleep lets the
-  compositor restore focus. Failures → `typeFailed(result, subject)`:
-  `notification.type-failed`, with `notification.ydotoold-not-running` as the
-  body when the backend has a `daemonHint` and stderr contains it (ydotool
-  exits 2 with "Please check if ydotoold is running."), else the entry name.
+  compositor restore focus.
 - `typeDelay` / `keyDelay` are **milliseconds** (`intSetting`, 0 allowed).
   `keyDelay` is the backend's `-d`; it replaced the `wtypeDelay` setting key in
   v2.7.0.
@@ -282,10 +299,10 @@ no typing. Sequence:
 So `autotypeSubmit` (default on) toggles just the **final** `Enter`: after the
 OTP when present, otherwise after the password.
 
-Each step is its own backend process, chained through `runTypeSteps` (a first
-failed step aborts the rest via one `typeFailed`): a text step is
-`typeTextArgv(value)`, a key step is `typeKeyArgv("tab" | "enter")` (see the
-backend table above). They are **not** merged into one call: ydotool splits
+Each step is its own backend process, chained through `runTypeSteps` (with
+its backend fallback; a failed step aborts the rest with one notification): a
+text step is `{text = value}`, a key step `{key = "tab" | "enter"}` (argv per
+the backend table above). They are **not** merged into one call: ydotool splits
 text and keys into separate subcommands (and with `-e 0` has no in-band
 `\t` / `\n`), and wtype allows a single terminal `--` after which everything
 is text, so no `-k` can follow an arbitrary value. `autotypeEntry` closes the
@@ -522,9 +539,11 @@ Do not regress these without a deliberate reason:
 6. **Clipboard timeout** — `clipTimeout` setting (positive int) wins, else
    `PASSWORD_STORE_CLIP_TIME` env, else `pass`'s default. Applies to Copy
    Password / Copy OTP (`pass -c` / `pass otp -c`).
-7. **Typing** — `sleep(typeDelay/1000)` then the `typeBackend` text step:
+7. **Typing** — `sleep(typeDelay/1000)` then the preferred backend's text step:
    `ydotool type -e 0 -d <keyDelay> -- <value>` or `wtype -d <keyDelay> --
-   <value>`. Both are ms. Values are typed verbatim (ydotool escapes off).
+   <value>`. Both are ms. Values are typed verbatim (ydotool escapes off). If
+   the preferred backend is not installed or reports itself unavailable on the
+   first step, the other installed backend runs the same steps.
 8. **Store path** — `storePath` setting or `~/.password-store` (expanded),
    exported as `PASSWORD_STORE_DIR` on every `pass` call.
 9. **OTP copy vs type** — `pass otp -c` for copy (with clip env), `pass otp` +
@@ -573,7 +592,8 @@ should survive into future changes:
   keys and in `label_key` / `description_key` values.
 - **Thirteen settings.** `storePath` (folder), `clipTimeout` (string — kept a
   string so `""` means "fall back to env"), `typeBackend` (select
-  `ydotool`/`wtype`, default `ydotool`), `typeDelay` / `keyDelay` /
+  `ydotool`/`wtype`, default `ydotool` — the *preferred* backend, the other is
+  an automatic fallback), `typeDelay` / `keyDelay` /
   `pinentryGraceMs` (int, `advanced`), `detailActionOrder` /
   `detailActionGrouping` (select, `advanced`), `terminalCommand` (string,
   `advanced` — `""` means auto-detect the terminal for the Edit action),
@@ -625,10 +645,18 @@ should survive into future changes:
   atx/wtype#71) for `ydotool` (`/dev/uinput` via `ydotoold`, display-server
   agnostic). But `ydotool type` assumes a US layout, which breaks symbols for
   anyone on another layout, while `wtype` is layout agnostic — neither strictly
-  wins, so `typeBackend` picks. Backend differences live only in
-  `TYPE_BACKENDS`; every Type / Autotype / quick-action path goes through
-  `typeTextArgv` / `typeKeyArgv` / `typeFailed`. There is no native
-  alternative (see *Open Points*).
+  wins, so `typeBackend` picks the *preferred* one. Backend differences live
+  only in `TYPE_BACKENDS`; every Type / Autotype / quick-action path goes
+  through `runTypeSteps`. There is no native alternative (see *Open Points*).
+- **The non-preferred backend is an automatic fallback, decided per action
+  by trying.** The default (ydotool) silently doesn't work until the user sets
+  up `ydotoold`, so a user with wtype installed would otherwise get failures
+  out of the box. Probing ahead (socket file, `processMatches("ydotoold")`)
+  can be stale or wrong (custom `YDOTOOL_SOCKET`, user vs system service);
+  the backend's own connect error is authoritative and arrives before any key
+  is sent, so retrying the identical step list on the next backend can't
+  double-type. Only step-1 "unavailable" failures fall back — a failure
+  mid-chain means text was already typed, so it aborts instead.
 - **`typeValue` passes the secret as a positional arg after `… --`**, not over
   a `printf %s '<val>' | …` pipe. Argv-only means no shell, no single-quote
   escaping, and a value with a leading `-` is still literal text. For ydotool,

@@ -157,9 +157,10 @@ local function intSetting(key, default)
   return math.floor(n)
 end
 
--- Typing backends, picked by the `typeBackend` setting. Both take the value
--- as one positional arg after `--`, so a value starting with "-" is still
--- literal text and no shell / quote-escaping is needed.
+-- Typing backends. The `typeBackend` setting names the *preferred* one; the
+-- other is an automatic fallback (typeBackends / runTypeSteps). Both take the
+-- value as one positional arg after `--`, so a value starting with "-" is
+-- still literal text and no shell / quote-escaping is needed.
 --
 -- ydotool (default): injects through /dev/uinput via its `ydotoold` daemon, so
 --   it works on any compositor / display server (issue #995), but maps every
@@ -170,14 +171,20 @@ end
 --     strings — a `\n` / `\t` in a password would otherwise become Enter / Tab).
 --   keys: `ydotool key <code>:1 <code>:0` — raw Linux input-event keycodes
 --     (linux/input-event-codes.h: Tab 15, Enter 28), not keysyms.
---   daemonHint: ydotool exits non-zero with a "failed to connect socket …
---     Please check if ydotoold is running." stderr when the daemon is down —
---     by far its likeliest failure, so typeFailed gives it its own message.
+--   unavailable: ydotool exits non-zero with a "failed to connect socket …
+--     Please check if ydotoold is running." stderr when the daemon is down.
 -- wtype: Wayland virtual-keyboard protocol; uploads a keymap holding the exact
 --   keysyms it types, so it is keyboard-layout agnostic, but needs a
 --   compositor implementing zwp_virtual_keyboard_v1 and is unmaintained
 --   (mistypes some punctuation sequences, atx/wtype#71).
 --   text: `wtype -d <keyDelay> -- <value>`; keys: `wtype -k <keysym>`.
+--   unavailable: "Compositor does not support the virtual keyboard protocol",
+--     or "Wayland connection failed" (no Wayland session), exit 1.
+--
+-- `unavailableHints`: stderr substrings meaning "this backend can't type here
+-- at all" — both are reported while connecting, before a single key is sent,
+-- which is what makes retrying the same steps on the fallback safe.
+-- `unavailableKey`: the notification body for that case.
 local TYPE_BACKENDS = {
   ydotool = {
     bin = "ydotool",
@@ -188,7 +195,8 @@ local TYPE_BACKENDS = {
       tab = { "ydotool", "key", "15:1", "15:0" },
       enter = { "ydotool", "key", "28:1", "28:0" },
     },
-    daemonHint = "ydotoold",
+    unavailableHints = { "ydotoold" },
+    unavailableKey = "notification.ydotoold-not-running",
   },
   wtype = {
     bin = "wtype",
@@ -199,27 +207,47 @@ local TYPE_BACKENDS = {
       tab = { "wtype", "-k", "Tab" },
       enter = { "wtype", "-k", "Return" },
     },
+    unavailableHints = { "virtual keyboard protocol", "Wayland connection failed" },
+    unavailableKey = "notification.wtype-unsupported",
   },
 }
+local TYPE_BACKEND_ORDER = { "ydotool", "wtype" } -- fallback order after the preferred one
 
--- The configured backend, read per call so a settings change applies at once;
--- an unknown stored value falls back to ydotool (the manifest default).
-local function typeBackend()
-  return TYPE_BACKENDS[noctalia.getConfig("typeBackend")] or TYPE_BACKENDS.ydotool
+-- Probe each backend's binary once (the answer can't change over a session).
+-- Only the binary is probed: whether `ydotoold` is running / the compositor
+-- speaks the virtual-keyboard protocol is discovered per action (runTypeSteps).
+local typerProbe = {} -- name → bool
+local function backendInstalled(name)
+  if typerProbe[name] == nil then
+    typerProbe[name] = noctalia.commandExists(TYPE_BACKENDS[name].bin) and true or false
+  end
+  return typerProbe[name]
 end
 
--- Probe the selected backend's binary once per backend (the answer can't
--- change over a session) and drop the Type rows entirely when it's missing,
--- rather than letting every Type action fail. Only the binary is probed:
--- whether `ydotoold` is running can change at any time, so that is reported
--- per action instead (typeFailed).
-local typerProbe = {} -- bin → bool
-local function typerAvailable()
-  local bin = typeBackend().bin
-  if typerProbe[bin] == nil then
-    typerProbe[bin] = noctalia.commandExists(bin) and true or false
+-- Installed backends in try order: the preferred one (`typeBackend` setting,
+-- read per call so a change applies at once; unknown value → ydotool, the
+-- manifest default) first, then the rest of TYPE_BACKEND_ORDER.
+local function typeBackends()
+  local preferred = noctalia.getConfig("typeBackend")
+  if TYPE_BACKENDS[preferred] == nil then
+    preferred = "ydotool"
   end
-  return typerProbe[bin]
+  local list = {}
+  if backendInstalled(preferred) then
+    list[1] = preferred
+  end
+  for _, name in ipairs(TYPE_BACKEND_ORDER) do
+    if name ~= preferred and backendInstalled(name) then
+      list[#list + 1] = name
+    end
+  end
+  return list
+end
+
+-- The Type rows (and Autotype) are dropped entirely when *no* backend is
+-- installed, rather than letting every Type action fail.
+local function typerAvailable()
+  return #typeBackends() > 0
 end
 
 -- The "Edit" action runs `pass edit` in a terminal (see editEntry). Noctalia's
@@ -1254,42 +1282,83 @@ end
 -- ── type actions (ydotool / wtype) ───────────────────────────────────────
 -- Noctalia has no plugin-facing keystroke/paste API — a launcher provider
 -- can't opt into the host's native auto-paste (PluginLauncherProvider never
--- reports supportsAutoPaste()), so typing is done here with the backend chosen
--- by the `typeBackend` setting (TYPE_BACKENDS, near the top of the file).
+-- reports supportsAutoPaste()), so typing is done here with an external
+-- backend (TYPE_BACKENDS, near the top of the file).
 --
 -- The injected keys land in whatever window currently holds focus, so every
 -- Type action closes the launcher panel first (as QML did with
 -- launcher.close()), then waits `typeDelay` ms for the compositor to hand
 -- focus back to the window the user was on before typing the value.
 --
--- argv typing `value` literally with the configured backend.
-local function typeTextArgv(value)
-  return typeBackend().textArgv(value or "", tostring(intSetting("keyDelay", 12)))
-end
-
--- argv pressing + releasing one key: "tab" or "enter".
-local function typeKeyArgv(key)
-  return typeBackend().keyArgv[key]
-end
-
--- Reports a failed typing run; a backend's daemonHint in stderr (ydotool with
--- its daemon down) gets the dedicated "ydotoold is not running" body.
-local function typeFailed(result, subject)
-  local hint = typeBackend().daemonHint
-  if hint and string.find(result.stderr or "", hint, 1, true) then
-    noctalia.notifyError(tr("notification.type-failed"), tr("notification.ydotoold-not-running"))
-  else
-    noctalia.notifyError(tr("notification.type-failed"), subject)
+-- Steps are backend-neutral — `{ text = value }` or `{ key = "tab" | "enter" }`
+-- — and become argv only once a backend is picked, so the same list can be
+-- replayed on the fallback.
+local function stepArgv(backend, step)
+  if step.text ~= nil then
+    return backend.textArgv(step.text, tostring(intSetting("keyDelay", 12)))
   end
+  return backend.keyArgv[step.key]
+end
+
+local function backendUnavailable(backend, result)
+  for _, hint in ipairs(backend.unavailableHints) do
+    if string.find(result.stderr or "", hint, 1, true) then
+      return true
+    end
+  end
+  return false
+end
+
+-- Runs `steps` in order, one backend process each, on the first backend of
+-- typeBackends(). If that backend's *first* step fails as "unavailable"
+-- (backendUnavailable — ydotoold down, compositor without the virtual-keyboard
+-- protocol), nothing has been typed yet, so the whole list is replayed on the
+-- next installed backend (logged, no notification). Any other failure, or one
+-- past step 1, aborts the rest with one notification.type-failed — its body
+-- notification.no-typing-backend when every installed backend turned out
+-- unavailable, the backend's own unavailableKey when it was the only one
+-- installed, else the entry name.
+local function runTypeSteps(steps, subject)
+  local backends = typeBackends()
+  if #backends == 0 then
+    noctalia.notifyError(tr("notification.type-failed"), subject)
+    return
+  end
+
+  local function attempt(bi)
+    local name = backends[bi]
+    local backend = TYPE_BACKENDS[name]
+    local function step(i)
+      if steps[i] == nil then
+        return
+      end
+      noctalia.runAsync(stepArgv(backend, steps[i]), function(result)
+        if result.exitCode == 0 and not result.timedOut then
+          step(i + 1)
+          return
+        end
+        local unavailable = backendUnavailable(backend, result)
+        if unavailable and i == 1 and backends[bi + 1] ~= nil then
+          noctalia.log("launcher-pass: " .. name .. " unavailable ("
+            .. trim((result.stderr or ""):gsub("%s+", " ")) .. "), falling back to " .. backends[bi + 1])
+          attempt(bi + 1)
+          return
+        end
+        local body = subject
+        if unavailable and i == 1 then
+          body = bi > 1 and tr("notification.no-typing-backend") or tr(backend.unavailableKey)
+        end
+        noctalia.notifyError(tr("notification.type-failed"), body)
+      end)
+    end
+    step(1)
+  end
+  attempt(1)
 end
 
 local function typeValue(value, subject)
   noctalia.runAsync({ "sleep", tostring(intSetting("typeDelay", 500) / 1000) }, function()
-    noctalia.runAsync(typeTextArgv(value), function(result)
-      if result.exitCode ~= 0 or result.timedOut then
-        typeFailed(result, subject)
-      end
-    end)
+    runTypeSteps({ { text = value or "" } }, subject)
   end)
 end
 
@@ -1327,25 +1396,13 @@ end
 -- i.e. autotypeSubmit toggles the *final* Enter — after the OTP when present,
 -- otherwise after the password.
 --
--- Each step is its own backend process: a text step is typeTextArgv (same
--- literal-text `-- <value>` form as typeValue), a key step is typeKeyArgv.
--- Neither backend can mix arbitrary text and keys in one invocation — ydotool
--- splits them into `type` / `key` subcommands (and with escapes off has no
--- in-band Tab / Enter), wtype allows a single terminal `--` after which
--- everything is text, so a `-k` can't follow the value — hence the chain. A failed step aborts the rest with one notification.type-failed.
-local function runTypeSteps(steps, i, subject)
-  local argv = steps[i]
-  if argv == nil then
-    return
-  end
-  noctalia.runAsync(argv, function(result)
-    if result.exitCode ~= 0 or result.timedOut then
-      typeFailed(result, subject)
-      return
-    end
-    runTypeSteps(steps, i + 1, subject)
-  end)
-end
+-- Each step is its own backend process (runTypeSteps, which also handles the
+-- backend fallback): a `{ text = … }` step uses the same literal-text
+-- `-- <value>` form as typeValue, a `{ key = … }` step one key press. Neither
+-- backend can mix arbitrary text and keys in one invocation — ydotool splits
+-- them into `type` / `key` subcommands (and with escapes off has no in-band
+-- Tab / Enter), wtype allows a single terminal `--` after which everything is
+-- text, so a `-k` can't follow the value — hence the chain.
 
 -- Runs the autotype sequence for `entryPath`. Called two ways: from the
 -- Autotype detail row (launcher open, `detailCache` warm) and from the
@@ -1357,7 +1414,12 @@ local function autotypeEntry(entryPath)
   local subject = entryPath:match("[^/]+$") or entryPath
   local sepKey = noctalia.getConfig("autotypeSeparator") == "enter" and "enter" or "tab"
   local submit = noctalia.getConfig("autotypeSubmit") ~= false
-  local typeStep, keyStep = typeTextArgv, typeKeyArgv
+  local function typeStep(value)
+    return { text = value or "" }
+  end
+  local function keyStep(key)
+    return { key = key }
+  end
 
   local function runSequence(data, otpCode)
     local steps = {
@@ -1375,7 +1437,7 @@ local function autotypeEntry(entryPath)
     -- One focus-restore delay after the launcher closes (as typeValue does),
     -- then walk the chain.
     noctalia.runAsync({ "sleep", tostring(intSetting("typeDelay", 500) / 1000) }, function()
-      runTypeSteps(steps, 1, subject)
+      runTypeSteps(steps, subject)
     end)
   end
 
@@ -1540,9 +1602,10 @@ end
 --   copy: password / OTP go through `pass -c` / `pass otp -c` (copyViaPass:
 --     clip-timeout env + close-launcher-first pinentry handling); username and
 --     fields are copied verbatim from memory via copyPlain.
---   type: the typeBackend (ydotool / wtype), after a launcher close +
---     typeDelay; OTP is fetched with `pass otp` first. (Type rows only exist
---     when the selected backend is installed.)
+--   type: the preferred typing backend (ydotool / wtype, with automatic
+--     fallback to the other), after a launcher close + typeDelay; OTP is
+--     fetched with `pass otp` first. (Type rows only exist when at least one
+--     backend is installed.)
 local function runAction(ctx)
   local subject = ctx.entryPath:match("[^/]+$") or ctx.entryPath
   local fieldSubject = ctx.kind == "field" and (ctx.key or subject) or subject

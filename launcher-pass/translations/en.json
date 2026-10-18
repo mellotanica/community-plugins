@@ -48,9 +48,11 @@
     "generate-failed": "Password regeneration failed",
     "generated": "Password regenerated",
     "no-current-entry": "Open a password entry first",
+    "no-typing-backend": "No typing backend can type here — start ydotoold, or use a compositor supporting wtype's virtual-keyboard protocol",
     "quick-action-failed": "Quick action failed",
     "quick-action-unknown": "Unknown quick action",
     "type-failed": "Type failed",
+    "wtype-unsupported": "The compositor doesn't support wtype's virtual-keyboard protocol",
     "ydotoold-not-running": "ydotoold is not running — start the ydotool daemon"
   },
   "result": {
@@ -117,8 +119,8 @@
       "label": "Terminal command"
     },
     "type-backend": {
-      "desc": "Tool used by the Type and Autotype actions. ydotool works on any compositor but needs the ydotoold daemon and assumes a US keyboard layout; wtype follows your keyboard layout but needs a Wayland compositor supporting the virtual-keyboard protocol",
-      "label": "Typing backend",
+      "desc": "Tool tried first by the Type and Autotype actions; when it is not installed or can't type here, the other one is used automatically. ydotool works on any compositor but needs the ydotoold daemon and assumes a US keyboard layout; wtype follows your keyboard layout but needs a Wayland compositor supporting the virtual-keyboard protocol",
+      "label": "Preferred typing backend",
       "options": {
         "wtype": "wtype (Wayland, any layout)",
         "ydotool": "ydotool (any compositor, US layout)"
