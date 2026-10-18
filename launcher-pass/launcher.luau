@@ -256,6 +256,52 @@ local function typerAvailable()
   return #typeBackends() > 0
 end
 
+-- ydotoold liveness, for display only. `ydotool debug` connects to the daemon
+-- socket before doing anything else and sends no input events: exit 0 when
+-- ydotoold answers, exit 2 + "Please check if ydotoold is running." (stdout)
+-- when it doesn't. The socket file's existence is not enough — a stopped
+-- daemon can leave it behind ("Connection refused"). The probe is async, so a
+-- render uses the last known state and the result re-renders the open detail
+-- view when it changes (onYdotooldChange, set next to renderDetailRows).
+-- Actions don't rely on it: runTypeSteps still tries the preferred backend
+-- and falls back on its real connect error.
+local ydotooldUp = nil -- nil = unknown, else bool
+local ydotooldAt = 0
+local ydotooldProbing = false
+local onYdotooldChange = nil -- function(), assigned once renderDetailRows exists
+
+local function probeYdotoold()
+  if ydotooldProbing or not backendInstalled("ydotool") then
+    return
+  end
+  if ydotooldUp ~= nil and noctalia.nowMs() - ydotooldAt <= PROBE_TTL_MS then
+    return
+  end
+  ydotooldProbing = true
+  noctalia.runAsync({ "ydotool", "debug" }, function(result)
+    ydotooldProbing = false
+    ydotooldAt = noctalia.nowMs()
+    local up = not (result.exitCode ~= 0
+      and string.find((result.stdout or "") .. (result.stderr or ""), "ydotoold", 1, true))
+    local wasDown = ydotooldUp == false
+    ydotooldUp = up
+    if wasDown == up and onYdotooldChange then -- shown backend may differ now
+      onYdotooldChange()
+    end
+  end, 1000)
+end
+
+-- The backend a Type action will actually end up on, for row subtitles:
+-- typeBackends()[1], skipping ydotool when ydotoold is known to be down and
+-- another backend is installed (runTypeSteps would fall back to it).
+local function shownBackend()
+  local list = typeBackends()
+  if list[1] == "ydotool" and ydotooldUp == false and list[2] ~= nil then
+    return list[2]
+  end
+  return list[1]
+end
+
 -- The "Edit" action runs `pass edit` in a terminal (see editEntry). Noctalia's
 -- own terminal picker isn't reachable from a plugin, so the terminal is
 -- resolved here, in this order: the `terminalCommand` setting (a full argv
@@ -756,9 +802,9 @@ end
 -- Build one action row for `spec` + `verb` ("copy" | "type"), record its
 -- dispatch context in `detailActions` under an "act:<n>" id, and return the
 -- row. `onActivate` reads the context back and hands it to `runAction`.
--- Type rows get the backend that will be tried first (typeBackends()[1],
--- after preference resolution) appended to their subtitle, like the Autotype
--- row.
+-- Type rows get the backend that will actually type (shownBackend: after
+-- preference resolution and the ydotoold probe) appended to their subtitle,
+-- like the Autotype row.
 local function actionRow(entryPath, spec, verb, n)
   local id = "act:" .. n
   local isCopy = verb == "copy"
@@ -771,7 +817,7 @@ local function actionRow(entryPath, spec, verb, n)
     id = id,
     title = title,
     subtitle = isCopy and spec.copySubtitle
-        or tr("action.type-subtitle", { subtitle = spec.typeSubtitle or "", backend = typeBackends()[1] or "" }),
+        or tr("action.type-subtitle", { subtitle = spec.typeSubtitle or "", backend = shownBackend() or "" }),
     glyph = isCopy and "copy" or "typography",
   }
 end
@@ -781,9 +827,7 @@ end
 -- setting is on *and* the typing backend is installed — it is a Type-family action, so it
 -- follows the same availability rule as the Type rows. Not an "act:" row:
 -- onActivate dispatches "autotype:<path>" straight to autotypeEntry. The
--- subtitle names the backend that will be tried first (typeBackends()[1],
--- after preference resolution) — a runtime fallback (ydotoold down) is only
--- discovered when the action runs.
+-- subtitle names the backend that will actually type (shownBackend).
 local function autotypeRowFor(entryPath)
   if not typerAvailable() then
     return nil
@@ -794,7 +838,7 @@ local function autotypeRowFor(entryPath)
   return {
     id = "autotype:" .. entryPath,
     title = tr("action.autotype"),
-    subtitle = tr("action.autotype-desc", { backend = typeBackends()[1] }),
+    subtitle = tr("action.autotype-desc", { backend = shownBackend() }),
     glyph = "keyboard",
   }
 end
@@ -810,7 +854,10 @@ end
 -- same rule as browse (matchesFragments) — so ":<path> otp" narrows to just
 -- the Copy/Type OTP rows. `detailActions` is still populated for every row
 -- (filtered-out ids simply never reach onActivate).
+local lastDetailRender = nil -- { text, entryPath, filter } of the shown detail view
+
 local function renderDetailRows(entryPath, data, filter)
+  probeYdotoold()
   detailActions = {}
   local rows = { goBackRow(parentOf(entryPath), entryPath) }
 
@@ -1175,6 +1222,21 @@ local function withEntryData(entryPath, cb)
   end)
 end
 
+-- ydotoold came up / went down since the open detail view was rendered:
+-- re-render it from the (warm) cache so the Type subtitles name the backend
+-- that will really type. Nothing to do if the view moved on or the cache
+-- went cold — the next render picks the new state up anyway.
+onYdotooldChange = function()
+  local r = lastDetailRender
+  if r == nil or lastQuery ~= r.text then
+    return
+  end
+  local hit = detailCache[r.entryPath]
+  if hit and (noctalia.nowMs() - hit.at) < hit.ttl then
+    launcher.setResults(r.text, renderDetailRows(r.entryPath, hit, r.filter))
+  end
+end
+
 -- Decrypts `entryPath` (cached — see DETAIL_TTL_MS) and publishes its detail
 -- rows. `text` is the raw onQuery text (leading ":" + entryPath + " " +
 -- filter), echoed back to setResults / checked against lastQuery exactly like
@@ -1186,6 +1248,7 @@ local function fetchDetail(entryPath, text, filter)
 
   local hit = detailCache[entryPath]
   if hit and (noctalia.nowMs() - hit.at) < hit.ttl then
+    lastDetailRender = { text = text, entryPath = entryPath, filter = filter }
     launcher.setResults(text, renderDetailRows(entryPath, hit, filter))
     return
   end
@@ -1220,6 +1283,7 @@ local function fetchDetail(entryPath, text, filter)
 
     local data = buildEntryData(entryPath, result.stdout)
     detailCache[entryPath] = data
+    lastDetailRender = { text = text, entryPath = entryPath, filter = filter }
     launcher.setResults(text, renderDetailRows(entryPath, data, filter))
   end
 

@@ -255,6 +255,18 @@ int) → nil (let `pass` default).
   come out wrong on another layout, non-ASCII can't be typed); wtype uploads
   its own keymap, so it is layout agnostic, and needs no daemon. Only binaries are probed; whether a backend can actually
   type is discovered per action.
+- **Shown backend** — Type / Autotype row subtitles end with the backend that
+  will actually type (`action.type-subtitle` = `{subtitle} · {backend}`,
+  `action.autotype-desc` has `{backend}`), from `shownBackend()`:
+  `typeBackends()[1]`, skipping ydotool when `ydotooldUp == false` and another
+  backend is installed. `probeYdotoold()` (kicked from `renderDetailRows`,
+  result cached `PROBE_TTL_MS`) runs `ydotool debug` — it connects to the
+  daemon socket first and sends no input events: exit 0 = up, exit 2 +
+  "ydotoold" on stdout = down (the socket file alone can be stale, "Connection
+  refused"). Async, so a render uses the last known state; when the shown
+  backend flips, `onYdotooldChange` re-renders the open detail view from the
+  warm cache (`lastDetailRender`). Display only — actions still try the
+  preferred backend and fall back on the real error.
 - **`runTypeSteps(steps, subject)`** — the one runner for every Type path.
   Steps are backend-neutral (`{text = v}` / `{key = "tab" | "enter"}`) and
   turned into argv by `stepArgv(backend, step)` only once a backend is picked.
