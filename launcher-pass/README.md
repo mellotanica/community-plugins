@@ -240,7 +240,10 @@ GPG pinentry prompt.
   (Generate action); `test` then `pass generate` (New entry); `ydotool` or
   `wtype`, and `sleep` (Type actions, and a chain of typing-backend calls plus
   `pass otp` for Autotype); a terminal running `pass edit` (Edit / New entry actions);
-  `noctalia msg panel-*` (pinentry focus handling).
+  `noctalia msg panel-*` (pinentry focus handling). The `pass` calls and the
+  Edit terminal are started through a small `sh -c` wrapper (Noctalia's line
+  stream) so they are not subject to Noctalia's 60-second subprocess limit —
+  a slow passphrase entry or a long edit is never cut short.
 - **Secrets:** decrypted values live only in the plugin's in-memory cache and on
   the system clipboard via `pass` / Noctalia. Neither Noctalia state nor the
   index file holds decrypted content. Navigation state is encoded in the launcher

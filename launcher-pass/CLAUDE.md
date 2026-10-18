@@ -227,8 +227,8 @@ int) → nil (let `pass` default).
 | Type OTP | `typeOtp(entryPath)` — `pass otp` (no `-c`) → `typeValue(code)` |
 
 - **`copyViaPass`** closes the launcher first (so a pinentry prompt from an
-  expired gpg-agent cache gets focus — no reopen dance), runs the command with
-  `DECRYPT_TIMEOUT_MS`, and posts `notification.copied` / `notification.copyFailed`.
+  expired gpg-agent cache gets focus — no reopen dance), runs the command through
+  `runUnbounded` (no timeout — see *Long-running subprocesses*), and posts `notification.copied` / `notification.copyFailed`.
   `pass -c` / `pass otp -c` do the clipboard auto-clear themselves.
 - **`copyPlain`** — `noctalia.copyToClipboard(value or "", "text/plain")` (the
   MIME arg is mandatory), `notification.copied`, close launcher. No auto-clear.
@@ -367,10 +367,10 @@ when non-empty — blank leaves `EDITOR` unset. The term prefix is
 prefix that takes a command, exec flag included — `foot -e`, `gnome-terminal
 --`); else `{$TERMINAL, "-e"}`; else `{<first of TERMINAL_CANDIDATES on PATH>,
 "-e"}` (`detectedTerminal`, memoised like `typerAvailable`); else nil. On the
-`runAsync` callback `detailCache[entryPath]` is cleared so the next detail view
-re-decrypts the edited file. The `runAsync` call passes **`EDIT_TIMEOUT_MS`**
-(24 h) — `noctalia.runAsync` applies a short default bound when the 3rd arg is
-omitted, which would kill the terminal a few seconds into the edit. When
+callback `detailCache[entryPath]` is cleared so the next detail view
+re-decrypts the edited file. The run goes through **`runUnbounded`** —
+`noctalia.runAsync` caps every run at 60 s and then SIGTERMs the whole process
+group, which would kill the terminal (and the unsaved edit) a minute in. When
 `terminalArgv()` is nil the row was never rendered; a defensive `editEntry`
 call still fires `notification.edit-failed`.
 
@@ -429,11 +429,11 @@ Its own `+` prefix (never produced by browsing), `+!` for the confirm step
   "does not exist" proceeds; exit 0 → `notification.create-exists`, anything
   else → `notification.create-failed`. On "proceed": close the panel, run
   `pass generate <path>` (no `-i` — brand-new entry, encrypt only, no pinentry;
-  `pass` still rejects `..`; `DECRYPT_TIMEOUT_MS` safety net). On success
+  `pass` still rejects `..`; via `runUnbounded`). On success
   `buildIndex(nil)` (new entry enters the store index); then if `terminalArgv()`
   resolves, spawn `pass edit <path>` in that terminal (EDITOR from
-  `editorCommand`, as in `editEntry`) with **`EDIT_TIMEOUT_MS`** — omitting the
-  bound lets a short runAsync default kill the terminal mid-edit. The launcher
+  `editorCommand`, as in `editEntry`) via **`runUnbounded`** — runAsync's 60 s
+  ceiling would kill the terminal mid-edit. The launcher
   **stays closed** either way; the only completion signal is
   `notification.created`, fired when `pass edit` returns (or right after
   `pass generate` when there is no terminal). No reopen into the detail view —
@@ -454,8 +454,8 @@ window, so the panel is closed and reopened via CLI IPC:
 `noctalia msg panel-close launcher` / `noctalia msg panel-open launcher
 <context>` (safe to call when already closed).
 
-`fetchDetail` races `pass show` (`runAsync(passArgv{...}, cb,
-DECRYPT_TIMEOUT_MS)` — 5 min, a safety net for a slow passphrase / hardware key)
+`fetchDetail` races `pass show` (`runUnbounded(passArgv{...}, cb)` — no
+timeout, so a slow passphrase / hardware-key touch is never cut short)
 against a `{"sleep", <pinentryGraceMs/1000>}` (default 50 ms — lower values let a
 real pinentry dialog take focus more easily but flicker the launcher more often;
 higher values, ~200/300 ms, keep the launcher steadier but give a pinentry
@@ -641,6 +641,16 @@ should survive into future changes:
   arbitrary value; bare text before `--` would misparse a leading `-`. Each
   username/password/OTP segment therefore gets its own text step and each
   separator/Enter its own key step, run in sequence (`runTypeSteps`).
+- **User-paced runs use `runStream` + an exit marker, not `runAsync`.**
+  `runAsync`'s timeout is clamped to 60 s and expiry kills the process group,
+  so the earlier 5 min decrypt / 24 h edit bounds were silently cut to a minute
+  — killing the Edit terminal with its unsaved buffer, and any pinentry wait
+  past 60 s. `runStream` is the only unbounded primitive; it lacks an exit
+  status and stderr, which `runUnbounded` restores with a marker line and a
+  stderr side file. Decrypts were moved too (not just Edit), so a slow
+  passphrase / hardware key is never cut short. Cost: a wedged gpg-agent now
+  holds a stream slot until the plugin reloads — `runUnbounded` falls back to a
+  bounded `runAsync` when the 4 slots are taken.
 - **Copy/Type close the launcher up front and never reopen.** QML did the same
   (`launcher.close()` before `pass -c`); with the panel gone a pinentry prompt
   gets focus on its own, so these paths skip the close/reopen dance that
@@ -709,7 +719,9 @@ order is already the sorted order).
 
 | Call | Notes |
 |---|---|
-| `runAsync(argvOrString, cb [, timeoutMs])` | argv array = no shell; string = `sh -c`. `cb` gets `{exitCode, stdout, stderr, timedOut, stdoutTruncated, stderrTruncated}`. 3rd arg (undocumented but established across sibling plugins) bounds the run. No `env` option — prepend `env KEY=VAL …` argv elements. |
+| `runAsync(argvOrString, cb [, timeoutMs])` | argv array = no shell; string = `sh -c`. `cb` gets `{exitCode, stdout, stderr, timedOut, stdoutTruncated, stderrTruncated}`. 3rd arg bounds the run, **clamped to [50 ms, 60 s], 5 s when omitted**; on expiry the host SIGTERMs then SIGKILLs the child's whole process group. No `cb` = detached fire-and-forget. No `env` / stdin option — prepend `env KEY=VAL …` argv elements. Only for short runs; anything waiting on the user goes through `runUnbounded`. |
+| `runStream(shellString, onLine)` | `sh -c`, **no timeout**; `onLine(line)` per stdout line (`\r` stripped, a final unterminated line is dropped); no stderr, no exit callback. Max 4 live streams per VM; stopped on plugin reload. Returns false when refused. Wrapped by `runUnbounded`. |
+| `readFile(path)` / `removeFile(path)` | sync; absolute paths as-is. `runUnbounded`'s stderr side file. |
 | `getConfig(key)` | manifest setting value (default from the manifest) |
 | `getSetting("shell.launcher.provider_prefix")` | host config; `plugin_api ≥ 26` |
 | `getenv(name)` / `expandPath(p)` | environment / `~` expansion |
@@ -739,6 +751,22 @@ to subprocesses (`grep`), parse only capped output, cap C-boundary calls
 - **String form = `sh -c`.** Needed only for pipes / redirects (`find … > file`,
   the `grep -iF` AND-chain). `shq(s)` single-quote-escapes; `reEsc(s)` escapes
   ERE metachars for a `grep -E` pattern.
+- **Long-running subprocesses → `runUnbounded(argv, cb)`.** `runAsync` is capped
+  at 60 s (see above), so every run that can wait on the user — `pass show` /
+  `pass -c` / `pass otp [-c]` / `pass generate [-i]` (pinentry, hardware key)
+  and the terminal running `pass edit` — goes through `runUnbounded` instead.
+  It builds `'arg'… </dev/null 2>'<errFile>'; printf '\n%s %d\n' '<marker>'
+  "$?"` from the argv (`shq` per element), runs it with `runStream`, collects
+  stdout lines until the marker line, then calls `cb` with a runAsync-shaped
+  `{exitCode, stdout, stderr, timedOut = false}` — `stdout` rebuilt exactly
+  (the leading `\n` terminates a final partial line), `stderr` read back from
+  `<pluginDataDir>/<marker>.err` and the file removed. The marker is
+  `__launcher_pass_exit_<VM_TAG>_<nowMs>_<seq>__`, `VM_TAG` a table address so
+  the launcher and service VMs (shared `pluginDataDir`) never collide. Ends on
+  the command's exit, not EOF. If `runStream` is missing or refuses (4-slot
+  cap), it logs and falls back to `runAsync(argv, cb, RUNASYNC_MAX_TIMEOUT_MS)`.
+  Short runs (`find`, `grep`, `test -e`, `sleep`, typing-backend steps,
+  `noctalia msg`) stay on `runAsync`.
 
 ---
 

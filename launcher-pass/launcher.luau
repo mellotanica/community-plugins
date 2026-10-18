@@ -61,20 +61,13 @@ local SCORE_POOL = 64
 -- Decrypted entries stay cached a while so re-rendering the same detail view
 -- (e.g. a debounce re-fire) doesn't trigger a second `pass show` / pinentry.
 local DETAIL_TTL_MS = 60000
--- `pass show` pauses on pinentry for as long as the user takes to enter a
--- passphrase or touch a hardware key — that can legitimately be a while, and
--- cutting it short would kill pinentry mid-entry. This is a safety net, not a
--- UX timer: it only exists so a truly wedged gpg-agent can't pin the async
--- callback open forever. On expiry the decrypt counts as failed, so the panel
--- stays closed (see fetchDetail) — the same graceful exit as a cancelled
--- pinentry, not a reopen.
-local DECRYPT_TIMEOUT_MS = 300000
--- `pass edit` opens $EDITOR in a terminal and blocks until the user is done —
--- which can be minutes when they're filling in fields on a freshly created
--- entry. `noctalia.runAsync` applies a short default timeout when the 3rd arg
--- is omitted (it kills the terminal after a few seconds), so interactive edits
--- pass an effectively-unlimited bound instead of leaving it off.
-local EDIT_TIMEOUT_MS = 24 * 60 * 60 * 1000
+-- `noctalia.runAsync` clamps its timeout to [50 ms, 60 s] (5 s when omitted)
+-- and on expiry SIGTERMs, then SIGKILLs, the child's whole process group. That
+-- is far too short for runs that wait on the user — a pinentry passphrase /
+-- hardware-key touch, or an editor in a terminal — so those go through
+-- runUnbounded (noctalia.runStream, no timeout) instead. This is the bound
+-- runUnbounded falls back to when no stream slot is free: the host maximum.
+local RUNASYNC_MAX_TIMEOUT_MS = 60000
 
 -- ── module state — caches only, no navigation state ────────────────────────
 local lastQuery = nil     -- most recent onQuery text, for dropping stale async
@@ -352,6 +345,67 @@ end
 -- the capped grep hit set.
 local function shq(s)
   return "'" .. s:gsub("'", "'\\''") .. "'"
+end
+
+-- ── unbounded runs (runStream + exit marker) ─────────────────────────────
+-- runAsync can't run longer than RUNASYNC_MAX_TIMEOUT_MS; runStream has no
+-- timeout but only delivers stdout, line by line, and no exit status. So
+-- runUnbounded(argv, cb) wraps the argv in a `sh -c` string that, after the
+-- command exits, prints a per-call marker line carrying `$?`:
+--
+--   'arg1' 'arg2' … </dev/null 2>'<errFile>'; printf '\n%s %d\n' '<marker>' "$?"
+--
+-- and calls `cb` with a runAsync-shaped result ({exitCode, stdout, stderr,
+-- timedOut = false}) when that line arrives. The extra "\n" before the marker
+-- terminates a final unterminated stdout line, so joining the lines received
+-- before the marker with "\n" reproduces stdout exactly (a trailing newline
+-- comes back as a trailing "" element). runStream drops stderr, so it goes to
+-- a per-call file under pluginDataDir() that is read back and removed. The
+-- marker is unique per call and per VM (both VMs share pluginDataDir), so an
+-- output line can't fake it in practice.
+--
+-- The run ends when the command exits, not on EOF: a background child holding
+-- stdout open just keeps the stream slot until it exits. The host allows 4
+-- streams per VM; when runStream refuses (slots full, or a host without it) the run falls back to
+-- runAsync with the host-maximum bound rather than failing outright. A plugin
+-- reload stops all streams — the callback then never fires, which is fine for
+-- every caller (the VM it would report to is gone).
+-- VM_TAG: a fresh table's heap address — distinct between the launcher and
+-- service VMs (they share pluginDataDir), where an unseeded math.random isn't.
+local VM_TAG = (tostring({}):match("0x(%x+)") or tostring({}):gsub("%W", ""))
+local unboundedSeq = 0
+local function runUnbounded(argv, cb)
+  unboundedSeq = unboundedSeq + 1
+  local marker = "__launcher_pass_exit_" .. VM_TAG .. "_" .. tostring(math.floor(noctalia.nowMs()))
+      .. "_" .. tostring(unboundedSeq) .. "__"
+  local errFile = noctalia.pluginDataDir() .. "/" .. marker .. ".err"
+  local parts = {}
+  for i, a in ipairs(argv) do
+    parts[i] = shq(a)
+  end
+  local cmd = table.concat(parts, " ") .. " </dev/null 2>" .. shq(errFile)
+      .. "; printf '\\n%s %d\\n' " .. shq(marker) .. ' "$?"'
+
+  local lines, done = {}, false
+  local started = noctalia.runStream ~= nil and noctalia.runStream(cmd, function(line)
+    if done then
+      return
+    end
+    local code = string.match(line, "^" .. marker .. " (%-?%d+)$")
+    if code == nil then
+      lines[#lines + 1] = line
+      return
+    end
+    done = true
+    local err = noctalia.readFile(errFile) or ""
+    noctalia.removeFile(errFile)
+    cb({ exitCode = tonumber(code), stdout = table.concat(lines, "\n"), stderr = err, timedOut = false })
+  end)
+  if not started then
+    noctalia.log("launcher-pass: runStream unavailable, falling back to a "
+      .. tostring(RUNASYNC_MAX_TIMEOUT_MS) .. " ms runAsync for `" .. tostring(argv[#argv]) .. "`")
+    noctalia.runAsync(argv, cb, RUNASYNC_MAX_TIMEOUT_MS)
+  end
 end
 
 -- Escape ERE metacharacters so a folder name (which can hold ".", "+", …, e.g.
@@ -1066,7 +1120,7 @@ local function withEntryData(entryPath, cb)
     cb(hit)
     return
   end
-  noctalia.runAsync(passArgv({ "pass", "show", entryPath }), function(result)
+  runUnbounded(passArgv({ "pass", "show", entryPath }), function(result)
     if result.exitCode ~= 0 or result.timedOut then
       cb(nil)
       return
@@ -1074,7 +1128,7 @@ local function withEntryData(entryPath, cb)
     local data = buildEntryData(entryPath, result.stdout)
     detailCache[entryPath] = data
     cb(data)
-  end, DECRYPT_TIMEOUT_MS)
+  end)
 end
 
 -- Decrypts `entryPath` (cached — see DETAIL_TTL_MS) and publishes its detail
@@ -1134,7 +1188,7 @@ local function fetchDetail(entryPath, text, filter)
   local resolved = false   -- true once the `pass show` callback has fired
   local panelClosed = false -- true once the panel was actually closed
 
-  noctalia.runAsync(
+  runUnbounded(
     passArgv({ "pass", "show", entryPath }),
     function(result)
       resolved = true
@@ -1149,8 +1203,7 @@ local function fetchDetail(entryPath, text, filter)
       if panelClosed and ok then
         reopenLauncherPanel(text)
       end
-    end,
-    DECRYPT_TIMEOUT_MS
+    end
   )
 
   noctalia.runAsync({ "sleep", tostring(pinentryGraceMs() / 1000) }, function()
@@ -1171,13 +1224,13 @@ end
 -- clipboard itself after PASSWORD_STORE_CLIP_TIME (see passArgv / clipTimeout).
 local function copyViaPass(cmd, subject)
   closeLauncherPanel(function()
-    noctalia.runAsync(passArgv(cmd, true), function(result)
+    runUnbounded(passArgv(cmd, true), function(result)
       if result.exitCode == 0 and not result.timedOut then
         noctalia.notify(tr("notification.copied"), subject)
       else
         noctalia.notifyError(tr("notification.copy-failed"), subject)
       end
-    end, DECRYPT_TIMEOUT_MS)
+    end)
   end)
 end
 
@@ -1252,13 +1305,13 @@ end
 -- can hit pinentry, which gets focus fine since the panel is already closed.
 local function typeOtp(entryPath, subject)
   closeLauncherPanel(function()
-    noctalia.runAsync(passArgv({ "pass", "otp", entryPath }), function(result)
+    runUnbounded(passArgv({ "pass", "otp", entryPath }), function(result)
       if result.exitCode == 0 and not result.timedOut then
         typeValue(trim(result.stdout or ""), subject)
       else
         noctalia.notifyError(tr("notification.type-failed"), subject)
       end
-    end, DECRYPT_TIMEOUT_MS)
+    end)
   end)
 end
 
@@ -1333,13 +1386,13 @@ local function autotypeEntry(entryPath)
         return
       end
       if data.hasOtp then
-        noctalia.runAsync(passArgv({ "pass", "otp", entryPath }), function(result)
+        runUnbounded(passArgv({ "pass", "otp", entryPath }), function(result)
           if result.exitCode == 0 and not result.timedOut then
             runSequence(data, trim(result.stdout or ""))
           else
             noctalia.notifyError(tr("notification.type-failed"), subject)
           end
-        end, DECRYPT_TIMEOUT_MS)
+        end)
       else
         runSequence(data, nil)
       end
@@ -1352,9 +1405,9 @@ end
 -- save, so it needs a real terminal — spawned via terminalArgv(). It can also
 -- pop a pinentry dialog, so the launcher is closed first (and not reopened,
 -- like the Copy/Type paths). The decrypted detail cache for this entry is
--- dropped afterwards so the next detail view reflects the edit. The runAsync
--- call passes EDIT_TIMEOUT_MS — omitting the bound lets a short default kill
--- the terminal mid-edit.
+-- dropped afterwards so the next detail view reflects the edit. It runs through
+-- runUnbounded: runAsync's 60 s ceiling would SIGTERM the terminal (and the
+-- editor in it) mid-edit.
 --
 -- The `editorCommand` setting, when non-empty, is exported as EDITOR for the
 -- run; blank leaves EDITOR unset so `pass` falls back to its own default.
@@ -1375,12 +1428,12 @@ local function editEntry(entryPath)
     for _, a in ipairs(passArgv({ "pass", "edit", entryPath }, false, extraEnv)) do
       argv[#argv + 1] = a
     end
-    noctalia.runAsync(argv, function(result)
+    runUnbounded(argv, function(result)
       detailCache[entryPath] = nil
       if result.exitCode ~= 0 or result.timedOut then
         noctalia.notifyError(tr("notification.edit-failed"), subject)
       end
-    end, EDIT_TIMEOUT_MS)
+    end)
   end)
 end
 
@@ -1395,7 +1448,7 @@ end
 local function generateEntry(entryPath)
   local subject = entryPath:match("[^/]+$") or entryPath
   closeLauncherPanel(function()
-    noctalia.runAsync(passArgv({ "pass", "generate", "-i", entryPath }), function(result)
+    runUnbounded(passArgv({ "pass", "generate", "-i", entryPath }), function(result)
       if result.exitCode == 0 and not result.timedOut then
         detailCache[entryPath] = nil
         noctalia.notify(tr("notification.generated"), subject)
@@ -1406,7 +1459,7 @@ local function generateEntry(entryPath)
           .. "): " .. trim(result.stderr or ""))
         noctalia.notifyError(tr("notification.generate-failed"), subject)
       end
-    end, DECRYPT_TIMEOUT_MS)
+    end)
   end)
 end
 
@@ -1423,8 +1476,8 @@ end
 -- Then `pass generate <path>` creates the entry with a random password (no
 -- decrypt / pinentry — encrypt only; `pass` still rejects ".."). When a
 -- terminal resolves, `pass edit <path>` opens $EDITOR so the user can add a
--- username and other fields — with EDIT_TIMEOUT_MS, since omitting the bound
--- lets a short runAsync default kill the terminal after a few seconds. The
+-- username and other fields — through runUnbounded, since runAsync's 60 s
+-- ceiling would SIGTERM the terminal mid-edit. The
 -- launcher is closed up front and **stays closed** (no reopen — that flickered
 -- when the editor exited); the only completion signal is notification.created,
 -- and buildIndex pulls the new entry into the store index for next time.
@@ -1441,7 +1494,7 @@ local function newEntry(path)
 
   local function generate()
     closeLauncherPanel(function()
-      noctalia.runAsync(passArgv({ "pass", "generate", path }), function(gen)
+      runUnbounded(passArgv({ "pass", "generate", path }), function(gen)
         if gen.exitCode ~= 0 or gen.timedOut then
           noctalia.log("launcher-pass: `pass generate " .. path .. "` failed (exit "
             .. tostring(gen.exitCode) .. (gen.timedOut and ", timed out" or "")
@@ -1461,10 +1514,10 @@ local function newEntry(path)
         for _, a in ipairs(passArgv({ "pass", "edit", path }, false, extraEnv)) do
           argv[#argv + 1] = a
         end
-        noctalia.runAsync(argv, function()
+        runUnbounded(argv, function()
           noctalia.notify(tr("notification.created"), subject)
-        end, EDIT_TIMEOUT_MS)
-      end, DECRYPT_TIMEOUT_MS)
+        end)
+      end)
     end)
   end
 
